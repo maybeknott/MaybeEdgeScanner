@@ -531,7 +531,7 @@ func candidateSNIs(resolvedSNI string, corpus []string, multiSNI bool) []string 
 			candidates = append(candidates, resolvedSNI)
 		}
 		candidates = append(candidates, corpus...)
-		return unique(candidates)
+		return uniqueInOrder(candidates)
 	}
 	if strings.TrimSpace(resolvedSNI) != "" {
 		return []string{resolvedSNI}
@@ -540,6 +540,21 @@ func candidateSNIs(resolvedSNI string, corpus []string, multiSNI bool) []string 
 		return []string{corpus[0]}
 	}
 	return []string{""}
+}
+
+func uniqueInOrder(xs []string) []string {
+	set := make(map[string]bool)
+	var out []string
+	for _, x := range xs {
+		for _, part := range strings.FieldsFunc(x, func(r rune) bool { return r == ',' || r == ';' || r == '\r' || r == '\n' || r == '\t' || r == ' ' }) {
+			part = strings.TrimSpace(part)
+			if part != "" && !set[part] {
+				set[part] = true
+				out = append(out, part)
+			}
+		}
+	}
+	return out
 }
 
 func tcp(ctx context.Context, ip string, port int, timeoutMS int) bool {

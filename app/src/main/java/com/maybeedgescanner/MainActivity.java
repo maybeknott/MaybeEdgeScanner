@@ -8,8 +8,11 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.net.ProxyInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -70,7 +73,7 @@ public class MainActivity extends Activity {
     private ScrollView mainScroll;
     private View targetAnchor, liveAnchor, vaultAnchor;
     private ProgressBar progress;
-    private TextView status, metrics, bestView, countersView, logView, networkBanner, copyFallbackView;
+    private TextView status, metrics, bestView, countersView, logView, networkBanner, homeDashboardView, copyFallbackView;
     private TextView presetSummaryView;
     private TextView scanPlanView;
     private EditText targetsInput, snisInput, totalInput, batchInput, threadsInput, timeoutInput;
@@ -111,6 +114,8 @@ public class MainActivity extends Activity {
         root.addView(status);
         networkBanner = pill(networkContextLine());
         root.addView(networkBanner);
+        homeDashboardView = panelText("Network dashboard\nPrivate IP: checking\nPublic IP: checking\nDNS: checking\nVPN/proxy: checking\nStatus: checking");
+        root.addView(homeDashboardView);
         root.addView(infoCard("Presets included", "Community-tested edges, provider CIDR corpora, and SNI hostnames are separate inputs. Provider sampling is taken from provider CIDR/range files, not from community-tested IPs."));
         root.addView(infoCard("No preset override", "Preset buttons merge into one target corpus and one SNI corpus. Duplicate ranges are deduped before expansion, so overlapping files do not override each other or silently erase your custom input."));
         root.addView(infoCard("Targets vs SNI", "Targets decide where sockets connect. SNI hosts decide what TLS/HTTP name is presented after connecting. They are intentionally separate: same target IP, many possible SNI/Host routes."));
@@ -423,6 +428,7 @@ public class MainActivity extends Activity {
         });
         setContentView(scroll);
         applyAccessibilityLabels();
+        updateHomeDashboard();
         updateAnalytics(Collections.emptyList());
         renderTokenPreviews();
         updateScanPlanPreview();
@@ -449,6 +455,129 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {
             return "Network context unavailable";
         }
+    }
+
+    private void updateHomeDashboard() {
+        if (homeDashboardView == null) return;
+        homeDashboardView.setText(homeDashboardText("checking..."));
+        new Thread(() -> {
+            String publicIp = fetchPublicIp();
+            ui.post(() -> {
+                if (homeDashboardView != null) homeDashboardView.setText(homeDashboardText(publicIp));
+            });
+        }, "public-ip-lookup").start();
+    }
+
+    private String homeDashboardText(String publicIp) {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) return "Network dashboard\nNetwork context unavailable";
+            Network network = cm.getActiveNetwork();
+            if (network == null) return "Network dashboard\nOffline";
+            NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+            LinkProperties lp = cm.getLinkProperties(network);
+            String transport = transportName(caps);
+            String privateIp = privateIps(lp);
+            String dns = dnsServers(lp);
+            String dnsProvider = dnsProvider(dns);
+            String dnsStatus = dnsStatus(caps, lp);
+            String proxyVpn = proxyVpnStatus(cm, caps);
+            String providerStatus = providerStatus(caps);
+            return "Network dashboard\n" +
+                    "Private IP: " + privateIp + "\n" +
+                    "Public IP: " + publicIp + "\n" +
+                    "DNS provider: " + dnsProvider + "\n" +
+                    "DNS servers: " + dns + "\n" +
+                    "VPN/proxy: " + proxyVpn + "\n" +
+                    "DNS/provider status: " + dnsStatus + " | " + transport + " | " + providerStatus;
+        } catch (Exception e) {
+            return "Network dashboard\nNetwork details unavailable";
+        }
+    }
+
+    private String fetchPublicIp() {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL("https://api.ipify.org").openConnection();
+            conn.setConnectTimeout(2500);
+            conn.setReadTimeout(2500);
+            conn.setRequestProperty("User-Agent", "MaybeEdgeScanner/1.1");
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.US_ASCII))) {
+                String line = br.readLine();
+                return line == null || line.trim().isEmpty() ? "unavailable" : line.trim();
+            }
+        } catch (Exception e) {
+            return "unavailable";
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private String privateIps(LinkProperties lp) {
+        if (lp == null) return "unavailable";
+        ArrayList<String> ips = new ArrayList<>();
+        for (LinkAddress address : lp.getLinkAddresses()) {
+            InetAddress inet = address.getAddress();
+            if (inet == null || inet.isLoopbackAddress() || inet.isLinkLocalAddress()) continue;
+            if (inet.isSiteLocalAddress() || inet instanceof Inet6Address) ips.add(inet.getHostAddress());
+        }
+        return ips.isEmpty() ? "unavailable" : joinComma(ips);
+    }
+
+    private String dnsServers(LinkProperties lp) {
+        if (lp == null || lp.getDnsServers().isEmpty()) return "unavailable";
+        ArrayList<String> servers = new ArrayList<>();
+        for (InetAddress dns : lp.getDnsServers()) servers.add(dns.getHostAddress());
+        return joinComma(servers);
+    }
+
+    private String dnsProvider(String dns) {
+        String d = dns == null ? "" : dns;
+        if (d.contains("1.1.1.1") || d.contains("1.0.0.1") || d.contains("2606:4700")) return "Cloudflare";
+        if (d.contains("8.8.8.8") || d.contains("8.8.4.4") || d.contains("2001:4860:4860")) return "Google";
+        if (d.contains("9.9.9.9") || d.contains("149.112.112.112") || d.contains("2620:fe")) return "Quad9";
+        if (d.contains("208.67.222.222") || d.contains("208.67.220.220")) return "Cisco OpenDNS";
+        if (d.contains("94.140.14.") || d.contains("2a10:50c0")) return "AdGuard";
+        return d.equals("unavailable") ? "unavailable" : "network provided";
+    }
+
+    private String dnsStatus(NetworkCapabilities caps, LinkProperties lp) {
+        ArrayList<String> status = new ArrayList<>();
+        status.add(caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) ? "validated" : "not validated");
+        if (Build.VERSION.SDK_INT >= 28 && lp != null) {
+            status.add(lp.isPrivateDnsActive() ? "Private DNS active" : "Private DNS off");
+            String name = lp.getPrivateDnsServerName();
+            if (name != null && !name.trim().isEmpty()) status.add(name);
+        }
+        return joinComma(status);
+    }
+
+    private String proxyVpnStatus(ConnectivityManager cm, NetworkCapabilities caps) {
+        ArrayList<String> out = new ArrayList<>();
+        out.add(caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ? "VPN active" : "VPN not detected");
+        try {
+            ProxyInfo proxy = cm == null ? null : cm.getDefaultProxy();
+            if (proxy != null && proxy.getHost() != null) out.add("proxy " + proxy.getHost() + ":" + proxy.getPort());
+        } catch (Exception ignored) {}
+        String sysProxy = System.getProperty("http.proxyHost");
+        if (sysProxy != null && !sysProxy.trim().isEmpty()) out.add("system proxy " + sysProxy);
+        return joinComma(out);
+    }
+
+    private String transportName(NetworkCapabilities caps) {
+        if (caps == null) return "network unknown";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "Wi-Fi";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "Cellular";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return "Ethernet";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return "VPN";
+        return "Network";
+    }
+
+    private String providerStatus(NetworkCapabilities caps) {
+        if (caps == null) return "capabilities unknown";
+        String metered = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ? "unmetered" : "metered";
+        String internet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ? "internet capable" : "no internet capability";
+        return metered + ", " + internet;
     }
 
     private Button presetCard(String title, String subtitle, int presetIndex) {
