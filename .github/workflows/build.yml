@@ -38,11 +38,13 @@ jobs:
             git commit -m "chore: update Go sidecar dependency lockfile"
             git push
           fi
-      - name: Upload resolved Go lockfile
+      - name: Upload resolved Go module files
         uses: actions/upload-artifact@v7
         with:
           name: maybeedgescanner-go-sum
-          path: go-sidecar/go.sum
+          path: |
+            go-sidecar/go.mod
+            go-sidecar/go.sum
       - name: Test Go sidecar
         run: go test ./...
       - name: Build Linux sidecar
@@ -91,6 +93,11 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
+      - name: Download resolved Go module files
+        uses: actions/download-artifact@v7
+        with:
+          name: maybeedgescanner-go-sum
+          path: go-sidecar
       - name: Login to GHCR
         run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - uses: docker/setup-buildx-action@v4
@@ -109,6 +116,9 @@ jobs:
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             CHANGED="true"
             REASON="manual workflow dispatch"
+          elif ! git diff --quiet -- go-sidecar/go.mod go-sidecar/go.sum; then
+            CHANGED="true"
+            REASON="resolved Go module files changed"
           else
             BASE="${{ github.event.before }}"
             if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then

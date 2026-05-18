@@ -36,6 +36,7 @@ RUN mkdir -p app/src/main \
 
 COPY go-sidecar ./go-sidecar
 RUN cd go-sidecar \
+    && go mod tidy \
     && go mod download all \
     && go test ./...
 
