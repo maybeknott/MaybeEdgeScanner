@@ -1,0 +1,37 @@
+runtime/
+*.log
+*.pid
+*.tmp
+*.bak
+
+# Generated binaries and archives
+*.exe
+*.dll
+*.so
+*.dylib
+dist/
+
+# Signing material must stay local/private
+*.key
+*.jks
+*.keystore
+*.p12
+.signing/
+signing.properties
+
+# IDE and OS
+.qodo/
+.tmp*/
+Thumbs.db
+Desktop.ini
+.idea/
+*.iml
+
+# Android build output
+build/
+app/build/
+.gradle/
+local.properties
+java_pid*.hprof
+!app/src/main/assets/**/*.apk
+dist/apk/*.apk

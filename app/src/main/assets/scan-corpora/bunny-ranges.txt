@@ -1,0 +1,7 @@
+# Bunny CDN representative ranges for scanner sampling.
+45.43.32.0/22
+84.17.46.0/24
+89.187.160.0/19
+103.136.144.0/22
+185.59.220.0/22
+193.70.2.0/24

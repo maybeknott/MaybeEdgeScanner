@@ -1,0 +1,9 @@
+# Google CDN / Google Front End representative ranges for scanner sampling.
+34.96.0.0/20
+34.102.0.0/16
+34.104.0.0/14
+34.110.0.0/16
+34.117.0.0/16
+35.186.192.0/18
+35.190.0.0/17
+35.201.64.0/18

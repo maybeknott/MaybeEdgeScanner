@@ -1,0 +1,12 @@
+.git
+.gradle
+build
+app/build
+go-sidecar/*.exe
+go-sidecar/maybeedgescanner-sidecar*
+*.apk
+*.keystore
+.signing
+release.keystore
+signing.properties
+local.properties

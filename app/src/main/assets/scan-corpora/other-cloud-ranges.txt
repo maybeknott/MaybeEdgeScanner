@@ -1,0 +1,4 @@
+# Reserved for miscellaneous CDN/cloud ranges that do not already have a dedicated preset file.
+# Keep Cloudflare/Fastly/CloudFront/Akamai out of this file so "Other CDNs" does not double-count them.
+# Add only genuinely miscellaneous ranges here after checking they are not present
+# in a provider-specific corpus file.

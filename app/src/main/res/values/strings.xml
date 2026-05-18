@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MaybeEdgeScanner</string>
+    <string name="widget_quick_scan_description">Start a default edge scan and open the scanner console.</string>
+</resources>

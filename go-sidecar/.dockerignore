@@ -1,0 +1,6 @@
+.git
+*.exe
+*.apk
+bin/
+dist/
+tmp/

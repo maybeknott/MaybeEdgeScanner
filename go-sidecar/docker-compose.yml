@@ -1,0 +1,12 @@
+services:
+  maybeedgescanner-sidecar:
+    build: .
+    image: maybeedgescanner-sidecar:local
+    ports:
+      - "10808:10808"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:10808/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

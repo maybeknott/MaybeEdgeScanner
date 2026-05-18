@@ -1,0 +1,60 @@
+plugins {
+    id 'com.android.application'
+}
+
+def signingPropsFile = rootProject.file('signing.properties')
+def signingProps = new Properties()
+def hasReleaseSigning = signingPropsFile.canRead()
+if (hasReleaseSigning) {
+    signingPropsFile.withInputStream { signingProps.load(it) }
+}
+
+android {
+    namespace 'com.maybeedgescanner'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.maybeknott.maybeedgescanner'
+        minSdk 23
+        targetSdk 35
+        versionCode 20260518
+        versionName '2026.05.18'
+    }
+
+    signingConfigs {
+        release {
+            enableV1Signing true
+            enableV2Signing true
+            enableV3Signing true
+            enableV4Signing false
+            if (hasReleaseSigning) {
+                storeFile rootProject.file(signingProps['STORE_FILE'])
+                storePassword signingProps['STORE_PASSWORD']
+                keyAlias signingProps['KEY_ALIAS']
+                keyPassword signingProps['KEY_PASSWORD']
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
+        release {
+            minifyEnabled false
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    applicationVariants.configureEach { variant ->
+        variant.outputs.configureEach { output ->
+            output.outputFileName = "MaybeEdgeScanner-${variant.buildType.name}.apk"
+        }
+    }
+}
+
+dependencies {
+}

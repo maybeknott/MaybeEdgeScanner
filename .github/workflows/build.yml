@@ -1,0 +1,146 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  go-sidecar:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go-sidecar
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go-sidecar/go.mod
+          cache-dependency-path: go-sidecar/go.sum
+      - name: Download Go dependencies
+        run: |
+          go mod tidy
+          go mod download
+      - name: Upload resolved Go lockfile
+        uses: actions/upload-artifact@v7
+        with:
+          name: maybeedgescanner-go-sum
+          path: go-sidecar/go.sum
+      - name: Test Go sidecar
+        run: go test ./...
+      - name: Build Linux sidecar
+        run: go build -trimpath -ldflags="-s -w" -o maybeedgescanner-sidecar-linux-amd64 .
+      - name: Build Windows sidecar
+        run: GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o maybeedgescanner-sidecar-windows-amd64.exe .
+      - name: Build macOS sidecar
+        run: GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o maybeedgescanner-sidecar-darwin-amd64 .
+      - name: Upload sidecar artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: maybeedgescanner-sidecars
+          path: |
+            go-sidecar/maybeedgescanner-sidecar-linux-amd64
+            go-sidecar/maybeedgescanner-sidecar-windows-amd64.exe
+            go-sidecar/maybeedgescanner-sidecar-darwin-amd64
+
+  android:
+    runs-on: ubuntu-latest
+    needs: go-sidecar
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.14.2"
+      - name: Download Gradle dependencies
+        run: gradle --no-daemon --refresh-dependencies :app:dependencies
+      - name: Build Android APKs
+        run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: maybeedgescanner-apks
+          path: app/build/outputs/apk/**/*.apk
+
+  dependency-container:
+    name: Publish dependency container
+    runs-on: ubuntu-latest
+    needs:
+      - go-sidecar
+      - android
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Login to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - uses: docker/setup-buildx-action@v4
+      - name: Resolve image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}-deps" >> "$GITHUB_OUTPUT"
+      - name: Check whether dependency image needs refresh
+        id: deps
+        run: |
+          IMAGE="${{ steps.image.outputs.name }}"
+          CHANGED="false"
+          REASON="dependency inputs unchanged"
+          if ! docker buildx imagetools inspect "$IMAGE:latest" >/dev/null 2>&1; then
+            CHANGED="true"
+            REASON="dependency image does not exist yet"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CHANGED="true"
+            REASON="manual workflow dispatch"
+          else
+            BASE="${{ github.event.before }}"
+            if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+              BASE="$(git rev-list --max-parents=0 HEAD)"
+            fi
+            if ! git diff --quiet "$BASE" HEAD -- \
+              go-sidecar/go.mod go-sidecar/go.sum \
+              settings.gradle build.gradle app/build.gradle \
+              .github/dependency-container/Dockerfile; then
+              CHANGED="true"
+              REASON="dependency inputs changed"
+            fi
+          fi
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+      - name: Build and push warmed dependency image
+        if: steps.deps.outputs.changed == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: .github/dependency-container/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: |
+            type=gha,scope=maybeedgescanner-deps
+            type=registry,ref=${{ steps.image.outputs.name }}:buildcache
+          cache-to: |
+            type=gha,scope=maybeedgescanner-deps,mode=max
+            type=registry,ref=${{ steps.image.outputs.name }}:buildcache,mode=max
+      - name: Summarize dependency image
+        run: |
+          IMAGE="${{ steps.image.outputs.name }}"
+          if [ "${{ steps.deps.outputs.changed }}" = "true" ]; then
+            echo "Published $IMAGE:${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Published $IMAGE:latest" >> "$GITHUB_STEP_SUMMARY"
+            echo "Refresh reason: ${{ steps.deps.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Skipped dependency image refresh for $IMAGE:latest" >> "$GITHUB_STEP_SUMMARY"
+            echo "Reason: ${{ steps.deps.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          fi

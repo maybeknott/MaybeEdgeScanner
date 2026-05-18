@@ -1,0 +1,8 @@
+docs.mapbox.com
+avatars.githubusercontent.com
+github.githubassets.com
+raw.githubusercontent.com
+docs.github.com
+pypi.org
+files.pythonhosted.org
+a248.e.akamai.net
