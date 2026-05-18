@@ -65,6 +65,8 @@ jobs:
   android:
     runs-on: ubuntu-latest
     needs: go-sidecar
+    env:
+      HAS_RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v5
@@ -74,15 +76,45 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.14.2"
+      - name: Configure release signing
+        if: env.HAS_RELEASE_KEYSTORE == 'true'
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          test -n "$RELEASE_KEYSTORE_PASSWORD"
+          test -n "$RELEASE_KEY_ALIAS"
+          test -n "$RELEASE_KEY_PASSWORD"
+          mkdir -p .signing
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > .signing/release.p12
+          {
+            echo "STORE_FILE=.signing/release.p12"
+            echo "STORE_PASSWORD=$RELEASE_KEYSTORE_PASSWORD"
+            echo "KEY_ALIAS=$RELEASE_KEY_ALIAS"
+            echo "KEY_PASSWORD=$RELEASE_KEY_PASSWORD"
+          } > signing.properties
       - name: Download Gradle dependencies
         run: gradle --no-daemon --refresh-dependencies :app:dependencies
-      - name: Build Android APKs
+      - name: Build debug APK
+        if: github.event_name == 'pull_request'
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Build signed Android APKs
+        if: github.event_name != 'pull_request'
         run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
+      - name: Verify release APK signing
+        if: github.event_name != 'pull_request'
+        run: |
+          APK="$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)/apksigner" verify --verbose --print-certs "$APK"
       - name: Upload APK artifacts
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: maybeedgescanner-apks
-          path: app/build/outputs/apk/**/*.apk
+          path: app/build/outputs/apk/release/*.apk
 
   dependency-container:
     name: Publish dependency container
@@ -188,15 +220,16 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_NAME: build-${{ github.run_number }}.${{ github.run_attempt }}
+          TAG_NAME: v1.0.0
         run: |
           mapfile -t ASSETS < <(find dist -type f | sort)
           if [ "${#ASSETS[@]}" -eq 0 ]; then
             echo "No release assets found under dist" >&2
             exit 1
           fi
+          gh release delete "$TAG_NAME" --cleanup-tag --yes >/dev/null 2>&1 || true
           gh release create "$TAG_NAME" "${ASSETS[@]}" \
             --target "$GITHUB_SHA" \
-            --title "MaybeEdgeScanner build ${{ github.run_number }}" \
+            --title "version 1.0.0" \
             --notes "Automated release from workflow run ${{ github.run_id }} for commit $GITHUB_SHA." \
             --latest

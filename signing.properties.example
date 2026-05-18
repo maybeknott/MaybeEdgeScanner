@@ -1,0 +1,15 @@
+# Copy this file to signing.properties and keep the copy private.
+# Release installs and updates require every APK to be signed with the same key.
+#
+# STORE_FILE is resolved relative to the repository root.
+STORE_FILE=.signing/maybeedgescanner-release.p12
+STORE_PASSWORD=change-this-store-password
+KEY_ALIAS=maybeknott
+# PKCS12 keystores use the same password for the store and key on modern JDKs.
+KEY_PASSWORD=change-this-store-password
+
+# GitHub Actions can also sign releases from repository secrets:
+# RELEASE_KEYSTORE_BASE64: base64 of the .p12/.jks keystore file
+# RELEASE_KEYSTORE_PASSWORD: keystore password
+# RELEASE_KEY_ALIAS: key alias
+# RELEASE_KEY_PASSWORD: key password
