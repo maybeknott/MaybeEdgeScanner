@@ -164,3 +164,39 @@ jobs:
             echo "Skipped dependency image refresh for $IMAGE:latest" >> "$GITHUB_STEP_SUMMARY"
             echo "Reason: ${{ steps.deps.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  release:
+    name: Release app
+    runs-on: ubuntu-latest
+    needs:
+      - go-sidecar
+      - android
+      - dependency-container
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download APK artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: maybeedgescanner-apks
+          path: dist/apks
+      - name: Download sidecar artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: maybeedgescanner-sidecars
+          path: dist/sidecars
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: build-${{ github.run_number }}.${{ github.run_attempt }}
+        run: |
+          mapfile -t ASSETS < <(find dist -type f | sort)
+          if [ "${#ASSETS[@]}" -eq 0 ]; then
+            echo "No release assets found under dist" >&2
+            exit 1
+          fi
+          gh release create "$TAG_NAME" "${ASSETS[@]}" \
+            --target "$GITHUB_SHA" \
+            --title "MaybeEdgeScanner build ${{ github.run_number }}" \
+            --notes "Automated release from workflow run ${{ github.run_id }} for commit $GITHUB_SHA." \
+            --latest
