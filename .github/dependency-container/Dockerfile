@@ -27,8 +27,7 @@ WORKDIR /workspace
 
 COPY go-sidecar/go.mod go-sidecar/go.sum ./go-sidecar/
 RUN cd go-sidecar \
-    && go mod download \
-    && go list -deps ./...
+    && go mod download
 
 COPY settings.gradle build.gradle ./
 COPY app/build.gradle ./app/build.gradle
@@ -36,7 +35,9 @@ RUN mkdir -p app/src/main \
     && gradle --no-daemon --refresh-dependencies :app:dependencies
 
 COPY go-sidecar ./go-sidecar
-RUN cd go-sidecar && go test ./...
+RUN cd go-sidecar \
+    && go mod download all \
+    && go test ./...
 
 LABEL org.opencontainers.image.title="MaybeEdgeScanner dependency cache" \
       org.opencontainers.image.description="Android Gradle and Go module dependencies warmed for MaybeEdgeScanner CI builds"
