@@ -30,6 +30,7 @@ RUN cd go-sidecar \
     && go mod download
 
 COPY settings.gradle build.gradle ./
+COPY gradle.properties ./
 COPY app/build.gradle ./app/build.gradle
 RUN mkdir -p app/src/main \
     && gradle --no-daemon --refresh-dependencies :app:dependencies

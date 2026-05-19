@@ -176,7 +176,7 @@ jobs:
             fi
             if ! git diff --quiet "$BASE" HEAD -- \
               go-sidecar/go.mod go-sidecar/go.sum \
-              settings.gradle build.gradle app/build.gradle \
+              settings.gradle build.gradle gradle.properties app/build.gradle \
               .github/dependency-container/Dockerfile; then
               CHANGED="true"
               REASON="dependency inputs changed"
