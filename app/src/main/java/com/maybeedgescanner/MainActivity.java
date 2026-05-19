@@ -32,6 +32,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.*;
+import java.lang.reflect.Method;
 import java.math.BigInteger;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
@@ -2516,7 +2517,7 @@ public class MainActivity extends Activity {
             String output;
             int exitCode = -1;
             try {
-                Process process = Shizuku.newProcess(new String[]{"sh", "-c", command}, null, null);
+                Process process = startShizukuShellProcess(command);
                 String stdout = readAll(process.getInputStream());
                 String stderr = readAll(process.getErrorStream());
                 exitCode = process.waitFor();
@@ -2537,6 +2538,12 @@ public class MainActivity extends Activity {
 
     private void setShizukuOutput(String text) {
         if (shizukuOutputView != null) shizukuOutputView.setText(text);
+    }
+
+    private Process startShizukuShellProcess(String command) throws Exception {
+        Method newProcess = Shizuku.class.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
+        newProcess.setAccessible(true);
+        return (Process) newProcess.invoke(null, (Object) new String[]{"sh", "-c", command}, null, null);
     }
 
     private String readAll(InputStream in) throws IOException {
