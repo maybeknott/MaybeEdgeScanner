@@ -9,10 +9,14 @@ The app is scanner-only. It is not a VPN client.
 - Bundled target corpora for community edge IPs, community `/24` CIDRs, Akamai, AWS CloudFront, Fastly, Cloudflare, GitHub Pages, Azure Front Door, Google CDN, Bunny CDN, StackPath/Edgio, and conventional cloud/CDN ranges.
 - Bundled SNI corpus merged with user-added SNIs and deduplicated before scanning.
 - Three-part Android UI: `Sources` for scan setup, `Results` for cards/filtering/export, and `Diagnostics` for logs, network context, Shizuku radio tools, support, and reference material.
-- Provider choice cards, comfort performance modes, per-source sample controls, score sorting, progress, live counters, guided help, visual density modes, and high-contrast result semantics.
+- Sticky top navigation with swipe gestures between `Sources`, `Results`, and `Diagnostics`.
+- Source-health summary that separates managed corpora, manual targets, managed SNI routes, custom SNI routes, expanded endpoint count, and phone-load posture.
+- Provider choice cards, comfort performance modes, per-source stepper sample controls, score sorting, progress, live counters, guided help, visual density modes, and high-contrast result semantics.
+- Explicit SNI route controls for primary-SNI probing or all-SNI route expansion.
 - Scan profiles: Quick TCP, Standard TLS, Deep HTTP + SNI, and Verify CDN edge.
 - Workflow modes: run one selected profile, run the automatic TCP to TLS to HTTP to Verify ladder, or run manually selected scanner stages.
 - Filters for working status, TLS/HTTP status, known-CDN status, TLS 1.3, SNI text, CDN text, certificate text, max latency, and minimum score.
+- Quick result buttons for working routes, TLS/HTTP evidence, and best route ranking.
 - Sorting by newest, latency, score, CDN, SNI, HTTP-first, and TLS-first.
 - Copy/export filtered results as line-separated IPs, comma-separated IPs, IP/SNI pairs, CSV, or JSON.
 - Shizuku-backed radio diagnostics for explicit user-controlled network-mode reads and guarded LTE/5G/Auto writes on supported devices.
@@ -23,7 +27,7 @@ The app is scanner-only. It is not a VPN client.
 
 ## Current Status
 
-The Android UI is implemented with Java/programmatic views. The active structure is `Sources`, `Results`, and `Diagnostics`: scan inputs stay in Sources, visible result shaping stays in Results, and operational context stays in Diagnostics. Result cards remain the primary artifact; copy/export never replaces the visual card surface with raw text.
+The Android UI is implemented with Java/programmatic views. The active structure is `Sources`, `Results`, and `Diagnostics`: scan inputs stay in Sources, visible result shaping stays in Results, and operational context stays in Diagnostics. Sources includes a source-health panel for target/SNI composition and load posture. Result cards remain the primary artifact; copy/export never replaces the visual card surface with raw text.
 
 The Go sidecar is a standalone HTTP service. It uses structured `slog` logging, graceful HTTP shutdown, IPv4/IPv6 target parsing, uTLS ClientHello rotation, ALPN negotiation for `h2` and `http/1.1`, Alt-Svc HTTP/3 hint capture, and `github.com/miekg/dns` for DNS queries.
 
@@ -85,9 +89,9 @@ Important groups:
 - Extra community edge list.
 - Provider-specific corpora under `scan-corpora`.
 
-Preset choices can replace the current inputs or append to them. User-entered IPs, CIDRs, domains, and SNIs remain first-class inputs. Provider cards append by default, so several CDN families can be selected for one run.
+Preset choices can replace or add to managed sources without dumping sampled corpora into custom text boxes. User-entered IPs, CIDRs, domains, and SNIs remain first-class custom additions. Provider cards append by default, so several CDN families can be selected for one run. The source-health panel keeps route mode visible so users know whether the scanner will try the primary SNI first or expand across all SNI routes.
 
-Per-source sample boxes control how many entries to load from each source. `0` means all entries from that source. The global total cap controls the final expanded scan sample.
+Per-source sample steppers control how many entries to load from each source. Use `-` / `+` for tuning, type an exact number for repeatable runs, or tap `All` to use the complete source (`0`). The global total cap controls the final expanded scan sample, and compact density caps card rendering while skipping heavyweight visual panels so mode changes stay responsive.
 
 ## In-App Reference
 

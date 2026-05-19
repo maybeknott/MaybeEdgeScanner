@@ -195,8 +195,14 @@ jobs:
             ${{ steps.image.outputs.name }}:${{ github.sha }}
             ${{ steps.image.outputs.name }}:latest
           labels: |
+            org.opencontainers.image.title=MaybeEdgeScanner dependency cache
+            org.opencontainers.image.description=Android Gradle and Go module dependencies warmed for MaybeEdgeScanner CI builds
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+          annotations: |
+            org.opencontainers.image.description=Android Gradle and Go module dependencies warmed for MaybeEdgeScanner CI builds
+          provenance: false
+          sbom: false
           cache-from: |
             type=gha,scope=maybeedgescanner-deps
             type=registry,ref=${{ steps.image.outputs.name }}:buildcache
@@ -238,16 +244,18 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_NAME: v1.0.0
         run: |
           mapfile -t ASSETS < <(find dist -type f | sort)
           if [ "${#ASSETS[@]}" -eq 0 ]; then
             echo "No release assets found under dist" >&2
             exit 1
           fi
-          gh release delete "$TAG_NAME" --cleanup-tag --yes >/dev/null 2>&1 || true
+          APP_VERSION="$(grep -E "versionName" app/build.gradle | head -n 1 | sed -E "s/.*versionName ['\"]([^'\"]+)['\"].*/\1/")"
+          APP_VERSION_CODE="$(grep -E "versionCode" app/build.gradle | head -n 1 | awk '{print $2}')"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          TAG_NAME="v${APP_VERSION}-${APP_VERSION_CODE}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
           gh release create "$TAG_NAME" "${ASSETS[@]}" \
             --target "$GITHUB_SHA" \
-            --title "version 1.0.0" \
+            --title "MaybeEdgeScanner ${APP_VERSION} (${APP_VERSION_CODE})" \
             --notes "Automated release from workflow run ${{ github.run_id }} for commit $GITHUB_SHA." \
             --latest
