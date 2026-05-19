@@ -7,18 +7,19 @@ The app is scanner-only. It is not a VPN client.
 ## Capabilities
 
 - Bundled target corpora for community edge IPs, community `/24` CIDRs, Akamai, AWS CloudFront, Fastly, Cloudflare, GitHub Pages, Azure Front Door, Google CDN, Bunny CDN, StackPath/Edgio, and conventional cloud/CDN ranges.
-- Bundled SNI corpus merged with user-added SNIs and deduplicated before scanning.
-- Three-part Android UI: `Sources` for scan setup, `Results` for cards/filtering/export, and `Diagnostics` for logs, network context, Shizuku radio tools, support, and reference material.
-- Sticky top navigation with swipe gestures between `Sources`, `Results`, and `Diagnostics`.
+- Bundled SNI corpus can be enabled or disabled, merged with user-added SNIs, and deduplicated before scanning.
+- Three-part Android UI: `Sources` for scan setup, `Results` for cards/filtering/export/visualizations, and `Diagnostics` for logs, enriched network/system context, Shizuku radio tools, support, and reference material.
+- Sticky full-width top navigation with swipe gestures between `Sources`, `Results`, and `Diagnostics`.
 - Source-health summary that separates managed corpora, manual targets, managed SNI routes, custom SNI routes, expanded endpoint count, and phone-load posture.
-- Provider choice cards, comfort performance modes, per-source stepper sample controls, score sorting, progress, live counters, guided help, visual density modes, and high-contrast result semantics.
+- Checkbox-driven provider sources, comfort performance modes, compact exact sample counts, horizontal sample scrubbers, score sorting, progress, live counters, guided help, visual density modes, and high-contrast result semantics.
 - Explicit SNI route controls for primary-SNI probing or all-SNI route expansion.
 - Scan profiles: Quick TCP, Standard TLS, Deep HTTP + SNI, and Verify CDN edge.
 - Workflow modes: run one selected profile, run the automatic TCP to TLS to HTTP to Verify ladder, or run manually selected scanner stages.
 - Filters for working status, TLS/HTTP status, known-CDN status, TLS 1.3, SNI text, CDN text, certificate text, max latency, and minimum score.
 - Quick result buttons for working routes, TLS/HTTP evidence, and best route ranking.
 - Sorting by newest, latency, score, CDN, SNI, HTTP-first, and TLS-first.
-- Copy/export filtered results as line-separated IPs, comma-separated IPs, IP/SNI pairs, CSV, or JSON.
+- Results include analytics, local stable observations, status heatmaps, latency distribution, CDN/SNI mix, and tap-to-copy result tiles.
+- Copy/export filtered results as line-separated IPs, comma-separated IPs, IP/SNI pairs, SNI-only lists, CSV, or JSON.
 - Shizuku-backed radio diagnostics for explicit user-controlled network-mode reads and guarded LTE/5G/Auto writes on supported devices.
 - Android home-screen quick scan widget and Quick Settings tile.
 - Optional Go sidecar with streaming scan and DNS endpoints.
@@ -59,13 +60,36 @@ Diagnostics includes a guarded Shizuku panel for users who explicitly want to in
 
 - Uses the official `dev.rikka.shizuku` API and provider.
 - Requests Shizuku permission only after the user taps the action.
+- Links directly to the official Shizuku GitHub release for APK install/update checks, while still linking the official setup guide.
+- Shows binder state, server version, and backend identity so users can distinguish root (`UID 0`) from ADB shell (`UID 2000`).
+- Includes a safe bridge probe that prints Android version, device identity, command reach, and current radio readback before any write is attempted.
 - Reads common `preferred_network_mode` keys before/after changes.
 - Provides guarded `LTE only`, `5G/LTE`, and `Auto` actions with confirmation dialogs.
 - Provides a sanitized advanced key/value override for OEM and SIM-slot variants.
 - Does not expose arbitrary shell commands.
 - Does not run during scans or change radio state automatically.
 
-Android radio integers and keys vary by OEM, carrier, Android version, modem, and SIM slot. If a device behaves unexpectedly, use `Auto`, the Android network settings button, or the Shizuku readback output to restore the intended mode.
+### Modern Android Compatibility
+
+Shizuku remains viable on newer phones, but the startup path depends on Android version and device policy:
+
+- Android 11 and newer: users can usually start Shizuku fully on-device through Android's Wireless debugging flow. This is the best path for modern non-rooted phones because it does not require a computer after setup.
+- Android 13 and newer: recent Shizuku releases include newer-platform startup improvements, including trusted-WLAN auto-start support on supported builds.
+- Android 16-era devices: current Shizuku releases are still being updated for new platform behavior. Use the latest official GitHub release when testing brand-new Android builds.
+- Android 10 and older: Shizuku can still be used, but non-rooted devices normally need computer ADB again after reboot.
+- Rooted devices: Shizuku can run with root, or users can use Sui. The app detects `UID 0` vs `UID 2000` so the diagnostics are honest about the backend.
+
+For our app, the direct GitHub Release link is preferable to making Google Play the main path because it is universal, version-visible, and works for users without Play access. The official Shizuku download page is still useful as a hub because it lists Play Store, GitHub, and F-Droid-style options.
+
+### Architecture Notes
+
+Shizuku does not magically grant every permission to this app. It supplies a privileged Binder bridge or a privileged process identity. ADB-backed Shizuku runs as shell (`UID 2000`), which has many Android shell permissions but is still constrained by SELinux, vendor policy, hidden API restrictions, modem/carrier behavior, and Android version changes. Root/Sui has broader reach (`UID 0`) but still deserves explicit user confirmation for risky actions.
+
+This app currently keeps Shizuku usage narrow: status checks, a safe bridge probe, readback, and guarded `settings` writes for radio preference keys. The deeper future refinement would be a Shizuku UserService/AIDL module for richer privileged APIs without parsing shell text. That is the right direction for anything beyond these small, auditable radio commands.
+
+Hidden API bypass libraries are intentionally not included right now. They are useful when calling restricted framework APIs directly from the app process, but this app currently uses Shizuku for narrow shell-backed diagnostics. Adding hidden API bypass before a real Binder/UserService need would add distribution risk without improving the current radio panel.
+
+Android radio integers, shell permissions, and settings keys vary by OEM, carrier, Android version, modem, and SIM slot. ADB-backed Shizuku is powerful but not the same as root; it can use many shell-granted Android permissions, but it cannot bypass every platform, SELinux, or vendor restriction. If a device behaves unexpectedly, use `Auto`, the Android network settings button, or the Shizuku readback output to restore the intended mode.
 
 ## Install Identity
 
@@ -78,7 +102,7 @@ Android radio integers and keys vary by OEM, carrier, Android version, modem, an
 
 Debug builds install separately from release builds so local testing does not overwrite a signed release app.
 
-## Presets
+## Sources And SNI Routes
 
 Bundled assets live under `app/src/main/assets`.
 
@@ -89,9 +113,9 @@ Important groups:
 - Extra community edge list.
 - Provider-specific corpora under `scan-corpora`.
 
-Preset choices can replace or add to managed sources without dumping sampled corpora into custom text boxes. User-entered IPs, CIDRs, domains, and SNIs remain first-class custom additions. Provider cards append by default, so several CDN families can be selected for one run. The source-health panel keeps route mode visible so users know whether the scanner will try the primary SNI first or expand across all SNI routes.
+Provider checkboxes enable or disable managed sources without dumping sampled corpora into custom text boxes. User-entered IPs, CIDRs, domains, and SNIs remain first-class custom additions. Several CDN families can be selected for one run, and the default SNI route corpus can be selected or deselected like any other source. The source-health panel keeps route mode visible so users know whether the scanner will try the primary SNI first or expand across all SNI routes.
 
-Per-source sample steppers control how many entries to load from each source. Use `-` / `+` for tuning, type an exact number for repeatable runs, or tap `All` to use the complete source (`0`). The global total cap controls the final expanded scan sample, and compact density caps card rendering while skipping heavyweight visual panels so mode changes stay responsive.
+Per-source sample controls decide how many entries to load from each source. Type an exact number for repeatable runs, scrub horizontally for coarse adjustment, or use `0` for the complete source. The global total cap controls the final expanded scan sample, and compact density caps card rendering while skipping heavyweight visual panels so mode changes stay responsive.
 
 ## In-App Reference
 

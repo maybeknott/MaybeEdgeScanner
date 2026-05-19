@@ -89,6 +89,7 @@ public class MainActivity extends Activity {
     private String cachedResourceLine = "battery n/a | heap 0MB";
     private long cachedResourceLineAt;
     private long stableHistoryRenderedAt;
+    private long lastShizukuProbeAt;
     private float swipeDownX, swipeDownY;
 
     private LinearLayout resultList;
@@ -100,17 +101,18 @@ public class MainActivity extends Activity {
     private View targetAnchor, liveAnchor, diagnosticsAnchor;
     private ProgressBar progress;
     private TextView status, metrics, bestView, countersView, logView, networkBanner, homeDashboardView;
-    private TextView shizukuStatusView, shizukuOutputView;
-    private TextView presetSummaryView, sourceHealthView;
+    private TextView shizukuHealthTileView, shizukuStatusView, shizukuNextStepView, shizukuOutputView;
+    private TextView sourceSummaryView, sourceHealthView;
     private TextView scanPlanView;
     private EditText targetsInput, snisInput, totalInput, batchInput, threadsInput, timeoutInput;
-    private EditText communitySampleInput, akamaiSampleInput, cloudfrontSampleInput, fastlySampleInput, cloudflareSampleInput, otherCdnSampleInput;
+    private EditText communitySampleInput, akamaiSampleInput, cloudfrontSampleInput, fastlySampleInput, cloudflareSampleInput, otherCdnSampleInput, customTargetSampleInput, customSniSampleInput;
     private EditText portsInput, pathInput, maxLatencyInput, resultLimitInput, cdnFilterInput, certFilterInput, sniFilterInput, minQualityInput;
     private EditText shizukuKeyInput, shizukuValueInput;
     private CheckBox multiSni, filterWorking, filterTlsHttp, bestPerIp, hideNoisyLogs, requireHttp, requireKnownCdn, requireTls13, batteryFriendlyUi;
+    private CheckBox communitySourceEnabled, akamaiSourceEnabled, cloudfrontSourceEnabled, fastlySourceEnabled, cloudflareSourceEnabled, otherCdnSourceEnabled, defaultSniEnabled;
     private CheckBox stepTcp, stepTls, stepHttp, stepVerify;
-    private Spinner profileSpinner, workflowSpinner, sortSpinner, presetSpinner, exportSpinner, tlsModeSpinner, cdnProviderSpinner;
-    private Button startButton, stopButton, copyButton, copyCsvButton, exportButton, clearButton, applyPresetButton, appendPresetButton, helpButton;
+    private Spinner profileSpinner, workflowSpinner, sortSpinner, exportSpinner, tlsModeSpinner, cdnProviderSpinner;
+    private Button startButton, stopButton, copyButton, copyCsvButton, exportButton, clearButton, helpButton;
     private Button tabTargetButton, tabLiveButton, tabDiagnosticsButton;
     private int totalTargets;
     private int activeTab;
@@ -156,20 +158,18 @@ public class MainActivity extends Activity {
         root.addView(status);
         networkBanner = pill(networkContextLine());
         root.addView(networkBanner);
-        homeDashboardView = panelText("Network\nTransport: checking\nLAN/WAN: checking\nDNS: checking\nPolicy: checking\nCapacity: checking");
+        homeDashboardView = panelText("Network and system\nTransport: checking\nLAN/WAN: checking\nDNS: checking\nPolicy: checking\nCapacity: checking\nDevice: checking\nRuntime: checking");
         root.addView(homeDashboardView);
         root.addView(quietNote("Sources build IP/SNI scan routes. Results show filtered cards, best SNIs, and export actions. Diagnostics keeps logs, radio controls, and network context separate."));
         helpButton = button("Reference", Color.rgb(23, 46, 63), Color.WHITE);
         root.addView(helpButton);
         LinearLayout tabs = row();
-        tabTargetButton = button("1 Sources", Color.rgb(21, 45, 62), Color.WHITE);
-        tabLiveButton = button("2 Results", Color.rgb(21, 45, 62), Color.WHITE);
-        tabDiagnosticsButton = button("3 Diagnostics", Color.rgb(21, 45, 62), Color.WHITE);
+        tabTargetButton = button("Sources", Color.rgb(21, 45, 62), Color.WHITE);
+        tabLiveButton = button("Results", Color.rgb(21, 45, 62), Color.WHITE);
+        tabDiagnosticsButton = button("Diagnostics", Color.rgb(21, 45, 62), Color.WHITE);
         tabs.addView(tabTargetButton, weight());
         tabs.addView(tabLiveButton, weight());
         tabs.addView(tabDiagnosticsButton, weight());
-        tabs.setPadding(dp(10), dp(8), dp(10), dp(8));
-        tabs.setBackground(glassBg(Color.rgb(6, 18, 28), Color.argb(120, 255, 255, 255)));
         screen.addView(tabs);
 
         LinearLayout quick = row();
@@ -188,60 +188,49 @@ public class MainActivity extends Activity {
         targetTab.addView(targetAnchor);
         targetsInput = area("Custom targets: IPv4, IPv6, domains, CIDR, ranges");
         snisInput = area("Custom SNI hosts");
-        LinearLayout presetRow = row();
-        presetSpinner = spinner(new String[]{"Community defaults", "Akamai", "AWS CloudFront", "Fastly", "Cloudflare", "Other CDNs", "Everything bundled"});
-        presetRow.addView(box("Preset corpus", presetSpinner), weight());
-        targetTab.addView(presetRow);
-
         LinearLayout providerPanel = column();
-        providerPanel.addView(quietNote("Managed sources stay here: choose a corpus, apply a broad sample posture, then tune each source with +/- or All. The custom target and SNI fields below are only for manual additions/removals."));
+        providerPanel.addView(quietNote("Enable only the corpora you want. Sample is compact by design: 0 means all entries from that source; any larger number is clamped to what that corpus actually contains."));
         communitySampleInput = input("256", true);
         akamaiSampleInput = input("128", true);
         cloudfrontSampleInput = input("128", true);
         fastlySampleInput = input("128", true);
         cloudflareSampleInput = input("128", true);
         otherCdnSampleInput = input("128", true);
-        LinearLayout samplePresetRow = row();
-        samplePresetRow.addView(samplePresetButton("Light", 96, 48), weight());
-        samplePresetRow.addView(samplePresetButton("Standard", 256, 128), weight());
-        samplePresetRow.addView(samplePresetButton("Wide", 768, 384), weight());
-        providerPanel.addView(samplePresetRow);
-        providerPanel.addView(sampleControl("Community", communitySampleInput, 64, 8192));
-        providerPanel.addView(sampleControl("Akamai", akamaiSampleInput, 32, 4096));
-        providerPanel.addView(sampleControl("CloudFront", cloudfrontSampleInput, 32, 4096));
-        providerPanel.addView(sampleControl("Fastly", fastlySampleInput, 32, 4096));
-        providerPanel.addView(sampleControl("Cloudflare", cloudflareSampleInput, 32, 4096));
-        providerPanel.addView(sampleControl("Other CDN", otherCdnSampleInput, 32, 4096));
+        communitySourceEnabled = check("Community tested /24s");
+        akamaiSourceEnabled = check("Akamai");
+        cloudfrontSourceEnabled = check("AWS CloudFront");
+        fastlySourceEnabled = check("Fastly");
+        cloudflareSourceEnabled = check("Cloudflare");
+        otherCdnSourceEnabled = check("GitHub, Azure, Google, Bunny, Edgio");
+        communitySourceEnabled.setChecked(true);
+        providerPanel.addView(sourceControl(communitySourceEnabled, communitySampleInput, "Default targets, extra edges, and community-tested IPs expanded to /24 CIDR tokens."));
+        providerPanel.addView(sourceControl(akamaiSourceEnabled, akamaiSampleInput, "Akamai AS20940 plus known Akamai 184.x host ranges."));
+        providerPanel.addView(sourceControl(cloudfrontSourceEnabled, cloudfrontSampleInput, "AWS CloudFront public range corpus."));
+        providerPanel.addView(sourceControl(fastlySourceEnabled, fastlySampleInput, "Fastly AS54113 public range corpus."));
+        providerPanel.addView(sourceControl(cloudflareSourceEnabled, cloudflareSampleInput, "Cloudflare public range corpus."));
+        providerPanel.addView(sourceControl(otherCdnSourceEnabled, otherCdnSampleInput, "Provider corpus for GitHub Pages, Azure Front Door, Google CDN, Bunny, Edgio, and other cloud/CDN ranges."));
         targetTab.addView(collapsibleBox("Managed source sampling", providerPanel, true));
 
-        LinearLayout presetButtons = row();
-        applyPresetButton = button("Replace Sources", Color.rgb(34, 51, 66), Color.WHITE);
-        appendPresetButton = button("Add To Sources", Color.rgb(34, 51, 66), Color.WHITE);
-        Button clearManagedButton = button("Clear Managed", Color.rgb(34, 51, 66), Color.WHITE);
-        presetButtons.addView(applyPresetButton, weight());
-        presetButtons.addView(appendPresetButton, weight());
-        presetButtons.addView(clearManagedButton, weight());
-        targetTab.addView(presetButtons);
-        LinearLayout presetCards1 = row();
-        presetCards1.addView(presetCard("Community /24s", "tested IPs expanded to subnets", 0), weight());
-        presetCards1.addView(presetCard("Other providers", "GitHub, Azure, Google, Bunny", 5), weight());
-        targetTab.addView(presetCards1);
-        LinearLayout presetCards2 = row();
-        presetCards2.addView(presetCard("Everything bundled", "community + provider corpora", 6), weight());
-        targetTab.addView(presetCards2);
-        presetSummaryView = glassText("Managed sources hold selected corpora and samples. Custom fields stay small and only hold your manual additions.");
-        targetTab.addView(presetSummaryView);
+        sourceSummaryView = glassText("Managed sources are driven directly by the checkboxes above. There is no hidden staging list or add/replace state.");
+        targetTab.addView(sourceSummaryView);
         sourceHealthView = glassText("Source health will summarize managed corpora, custom additions, SNI routes, expansion size, and phone-load posture before scanning.");
         targetTab.addView(sourceHealthView);
         scanPlanView = glassText("Scan plan will combine managed sources, custom entries, SNI routes, ports, workflow, and caps before scanning.");
         targetTab.addView(scanPlanView);
         targetTab.addView(section("Targets"));
-        targetTab.addView(quietNote("Custom targets are for manual additions or removals only. Selected corpora and sampled IPs stay in managed sources and are summarized below."));
+        targetTab.addView(quietNote("Custom targets are for manual additions/removals only. Selected corpora and sampled IPs stay summarized in managed sources instead of being dumped into this text box."));
+        customTargetSampleInput = input("0", true);
+        targetTab.addView(box("Custom target sample (0 = all typed values)", customTargetSampleInput));
         targetTab.addView(targetsInput);
         targetChipPreview = chipPanel();
         targetTab.addView(targetChipPreview);
         targetTab.addView(section("SNI Hosts"));
-        targetTab.addView(quietNote("Custom SNI hosts are explicit TLS/Host routes. Managed SNI presets stay summarized instead of being pasted into this field."));
+        targetTab.addView(quietNote("Custom SNI hosts are explicit TLS/Host routes. Default SNI routes can be enabled or disabled; custom hosts can be sampled separately."));
+        defaultSniEnabled = check("Default SNI route corpus");
+        defaultSniEnabled.setChecked(true);
+        targetTab.addView(defaultSniEnabled);
+        customSniSampleInput = input("0", true);
+        targetTab.addView(box("Custom SNI sample (0 = all typed hosts)", customSniSampleInput));
         targetTab.addView(snisInput);
         sniChipPreview = chipPanel();
         targetTab.addView(sniChipPreview);
@@ -276,7 +265,7 @@ public class MainActivity extends Activity {
         targetTab.addView(collapsibleBox("Workflow and probe stages", workflowPanel, true));
 
         LinearLayout performancePanel = column();
-        performancePanel.addView(quietNote("Performance presets tune threads, batch, and timeout. Total cap still limits expanded endpoints."));
+        performancePanel.addView(quietNote("Performance modes tune threads, batch, and timeout. Raise Total cap for full subnet or full-provider runs."));
         LinearLayout modeRow = row();
         modeRow.addView(modeButton("Battery Saver", "12 / 500 / 2500", 12, 500, 2500), weight());
         modeRow.addView(modeButton("Balanced", "32 / 2000 / 3000", 32, 2000, 3000), weight());
@@ -378,7 +367,7 @@ public class MainActivity extends Activity {
         cdnProviderSpinner = spinner(new String[]{"Any provider", "Known CDN", "Akamai", "Cloudflare", "CloudFront/AWS", "Fastly", "GitHub", "Google", "Azure", "Bunny", "Unknown"});
         LinearLayout providerFilterRow = row();
         providerFilterRow.addView(box("Sort cards", sortSpinner), weight());
-        providerFilterRow.addView(box("Provider preset", cdnProviderSpinner), weight());
+        providerFilterRow.addView(box("Provider filter", cdnProviderSpinner), weight());
         filterPanel.addView(providerFilterRow);
         LinearLayout row5 = row();
         maxLatencyInput = input("", true); maxLatencyInput.setHint("Any");
@@ -439,7 +428,7 @@ public class MainActivity extends Activity {
         buttons.addView(exportButton, weight());
         exportPanel.addView(buttons);
         LinearLayout exportRow = row();
-        exportSpinner = spinner(new String[]{"Line-separated IPs", "Comma-separated IPs", "IP SNI pairs", "CSV rows", "JSON"});
+        exportSpinner = spinner(new String[]{"Line-separated IPs", "Comma-separated IPs", "IP SNI pairs", "SNI only", "CSV rows", "JSON"});
         exportRow.addView(box("Clipboard format", exportSpinner), weight());
         exportPanel.addView(exportRow);
         liveTab.addView(collapsibleBox("Copy and export", exportPanel, false));
@@ -465,6 +454,7 @@ public class MainActivity extends Activity {
         diagnosticsAnchor = section("Diagnostics");
         diagnosticsTab.addView(diagnosticsAnchor);
         diagnosticsTab.addView(quietNote("Logs and support links live here so they do not bury scan setup or result cards."));
+        diagnosticsTab.addView(shizukuHealthTile());
         diagnosticsTab.addView(section("Logs"));
         logView = text("", 12, MUTED, false);
         logView.setTypeface(Typeface.MONOSPACE);
@@ -479,9 +469,6 @@ public class MainActivity extends Activity {
         tabTargetButton.setOnClickListener(v -> selectTab(0));
         tabLiveButton.setOnClickListener(v -> selectTab(1));
         tabDiagnosticsButton.setOnClickListener(v -> selectTab(2));
-        applyPresetButton.setOnClickListener(v -> applyPreset(false));
-        appendPresetButton.setOnClickListener(v -> applyPreset(true));
-        clearManagedButton.setOnClickListener(v -> clearManagedSources());
         copyButton.setOnClickListener(v -> copySelectedFormat());
         copyCsvButton.setOnClickListener(v -> copyVisibleCsv());
         exportButton.setOnClickListener(v -> exportJson());
@@ -517,24 +504,17 @@ public class MainActivity extends Activity {
         profileSpinner.setOnItemSelectedListener(planRefresh);
         workflowSpinner.setOnItemSelectedListener(planRefresh);
         tlsModeSpinner.setOnItemSelectedListener(planRefresh);
-        presetSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) { updatePresetPreview(); }
-            @Override public void onNothingSelected(AdapterView<?> p) {}
-        });
         targetsInput.addTextChangedListener(simpleWatcher(this::renderTokenPreviews));
         snisInput.addTextChangedListener(simpleWatcher(this::renderTokenPreviews));
         totalInput.addTextChangedListener(simpleWatcher(this::renderTokenPreviews));
+        customTargetSampleInput.addTextChangedListener(simpleWatcher(this::renderTokenPreviews));
+        customSniSampleInput.addTextChangedListener(simpleWatcher(this::renderTokenPreviews));
+        defaultSniEnabled.setOnClickListener(v -> renderTokenPreviews());
         batchInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
         threadsInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
         timeoutInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
         portsInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
         pathInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
-        communitySampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
-        akamaiSampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
-        cloudfrontSampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
-        fastlySampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
-        cloudflareSampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
-        otherCdnSampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
         maxLatencyInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
         resultLimitInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
         cdnFilterInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
@@ -547,7 +527,6 @@ public class MainActivity extends Activity {
         updateHomeDashboard();
         updateAnalytics(Collections.emptyList());
         renderTokenPreviews();
-        updatePresetPreview();
         selectTab(0);
     }
 
@@ -596,13 +575,15 @@ public class MainActivity extends Activity {
             String proxyVpn = proxyVpnStatus(cm, caps);
             String providerStatus = providerStatus(caps);
             String capacity = capacityStatus(caps);
-            return "Network\n" +
+            return "Network and system\n" +
                     "Transport: " + transport + "\n" +
                     "LAN/WAN: " + privateIp + " -> " + publicIp + "\n" +
                     "DNS: " + dnsProvider + " (" + dns + ")\n" +
                     "Policy: " + proxyVpn + "\n" +
                     "State: " + dnsStatus + " | " + providerStatus + "\n" +
-                    "Capacity: " + capacity;
+                    "Capacity: " + capacity + "\n" +
+                    "Device: " + deviceLine() + "\n" +
+                    "Runtime: " + resourceLine();
         } catch (Exception e) {
             return "Network\nDetails unavailable";
         }
@@ -732,79 +713,56 @@ public class MainActivity extends Activity {
         return parts.isEmpty() ? "not reported by Android" : joinComma(parts);
     }
 
-    private Button presetCard(String title, String subtitle, int presetIndex) {
-        Button b = button(title + "\n" + subtitle, Color.rgb(16, 38, 52), Color.WHITE);
-        b.setOnClickListener(v -> {
-            presetSpinner.setSelection(presetIndex);
-            updatePresetPreview();
-            toast(title + " selected. Use Replace Sources or Add To Sources.");
-        });
-        b.setContentDescription(title + " preset card. " + subtitle + ". Selects the corpus without changing Sources.");
-        return b;
-    }
-
-    private Button samplePresetButton(String label, int community, int provider) {
-        Button b = button(label + "\n" + community + " / " + provider, Color.rgb(16, 38, 52), Color.WHITE);
-        b.setOnClickListener(v -> {
-            suppressUiRefresh = true;
-            communitySampleInput.setText(String.valueOf(community));
-            akamaiSampleInput.setText(String.valueOf(provider));
-            cloudfrontSampleInput.setText(String.valueOf(provider));
-            fastlySampleInput.setText(String.valueOf(provider));
-            cloudflareSampleInput.setText(String.valueOf(provider));
-            otherCdnSampleInput.setText(String.valueOf(provider));
-            suppressUiRefresh = false;
-            updatePresetPreview();
-            toast(label + " sampling applied");
-        });
-        b.setContentDescription(label + " sampling preset. Community " + community + ", each provider " + provider + ".");
-        return b;
-    }
-
-    private LinearLayout sampleControl(String label, EditText input, int step, int max) {
+    private LinearLayout sourceControl(CheckBox enabled, EditText input, String detail) {
         LinearLayout panel = column();
         panel.setBackground(glassBg(Color.rgb(10, 24, 34), Color.argb(60, 255, 255, 255)));
         panel.setPadding(dp(7), dp(2), dp(7), dp(7));
-        panel.addView(section(label));
         LinearLayout controls = row();
-        Button minus = button("-", Color.rgb(42, 49, 58), Color.WHITE);
-        Button plus = button("+", Color.rgb(16, 58, 70), Color.WHITE);
-        Button all = button("All", Color.rgb(53, 42, 74), Color.WHITE);
-        minus.setContentDescription("Decrease " + label + " sample by " + step);
-        plus.setContentDescription("Increase " + label + " sample by " + step);
-        all.setContentDescription("Use all available " + label + " entries");
-        minus.setOnClickListener(v -> adjustSample(input, -step, max));
-        plus.setOnClickListener(v -> adjustSample(input, step, max));
-        all.setOnClickListener(v -> setSample(input, 0, "All " + label + " entries enabled"));
-        controls.addView(minus, fixedWidth(42));
-        controls.addView(input, new LinearLayout.LayoutParams(0, -2, 1));
-        controls.addView(plus, fixedWidth(42));
-        controls.addView(all, fixedWidth(58));
+        input.setEms(7);
+        input.setMinWidth(dp(76));
+        input.setMaxWidth(dp(112));
+        SeekBar scrubber = new SeekBar(this);
+        scrubber.setMax(999999);
+        scrubber.setProgress(clampInt(intValue(input, 0), 0, 999999));
+        scrubber.setContentDescription(enabled.getText() + " horizontal sample scrubber. Zero means all available entries.");
+        scrubber.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (!fromUser) return;
+                suppressUiRefresh = true;
+                input.setText(String.valueOf(progress));
+                input.setSelection(input.getText().length());
+                suppressUiRefresh = false;
+                renderTokenPreviews();
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        input.addTextChangedListener(simpleWatcher(() -> {
+            int value = clampInt(intValue(input, 0), 0, 999999);
+            if (scrubber.getProgress() != value) scrubber.setProgress(value);
+            renderTokenPreviews();
+        }));
+        enabled.setOnClickListener(v -> renderTokenPreviews());
+        controls.addView(enabled, new LinearLayout.LayoutParams(0, -2, 1));
+        controls.addView(input, fixedWidth(94));
         panel.addView(controls);
-        TextView hint = text("0 = all, capped at " + max, 10, Color.rgb(155, 184, 198), false);
+        panel.addView(scrubber, new LinearLayout.LayoutParams(-1, -2));
+        TextView hint = text(detail + "\n0 = all available; type exact large counts or scrub horizontally for coarse sampling.", 10, Color.rgb(155, 184, 198), false);
         panel.addView(hint);
         return panel;
-    }
-
-    private void adjustSample(EditText input, int delta, int max) {
-        int current = intValue(input, 0);
-        int next = current <= 0 && delta < 0 ? 0 : clampInt(current + delta, 0, max);
-        setSample(input, next, "Sample set to " + (next == 0 ? "All" : String.valueOf(next)));
-    }
-
-    private void setSample(EditText input, int value, String message) {
-        if (input == null) return;
-        input.setText(String.valueOf(value));
-        input.setSelection(input.getText().length());
-        updatePresetPreview();
-        renderTokenPreviews();
-        toast(message);
     }
 
     private void clearManagedSources() {
         selectedSourceTargets.clear();
         selectedSourceSnis.clear();
-        presetSummaryView.setText("Managed sources cleared. Custom targets and custom SNI routes remain untouched.");
+        if (communitySourceEnabled != null) communitySourceEnabled.setChecked(false);
+        if (akamaiSourceEnabled != null) akamaiSourceEnabled.setChecked(false);
+        if (cloudfrontSourceEnabled != null) cloudfrontSourceEnabled.setChecked(false);
+        if (fastlySourceEnabled != null) fastlySourceEnabled.setChecked(false);
+        if (cloudflareSourceEnabled != null) cloudflareSourceEnabled.setChecked(false);
+        if (otherCdnSourceEnabled != null) otherCdnSourceEnabled.setChecked(false);
+        if (defaultSniEnabled != null) defaultSniEnabled.setChecked(false);
+        if (sourceSummaryView != null) sourceSummaryView.setText("Managed sources disabled. Custom targets and custom SNI routes remain untouched.");
         renderTokenPreviews();
         toast("Managed sources cleared");
     }
@@ -822,7 +780,7 @@ public class MainActivity extends Activity {
             updateScanPlanPreview();
             toast(title + " values applied. You can still edit them.");
         });
-        b.setContentDescription(title + " performance preset: threads, batch, timeout " + subtitle);
+        b.setContentDescription(title + " performance mode: threads, batch, timeout " + subtitle);
         return b;
     }
 
@@ -870,12 +828,13 @@ public class MainActivity extends Activity {
 
     private void renderTokenPreviews() {
         if (targetChipPreview == null || sniChipPreview == null || targetsInput == null || snisInput == null) return;
+        rebuildManagedSources();
         List<String> targetTokens = combinedTargetTokens();
         int targetCap = Math.max(1, intValue(totalInput, 72000));
         int estimatedTargets = estimateExpandedTargetCount(targetTokens, 200000);
         List<String> previewTargets = previewExpandedTargets(targetTokens, Math.min(targetCap, PREVIEW_TARGET_LIMIT));
-        renderChips(targetChipPreview, "Target queue (" + selectedSourceTargets.size() + " source + " + lines(targetsInput.getText().toString()).size() + " custom -> " + Math.min(estimatedTargets, targetCap) + " endpoints, " + previewTargets.size() + " previewed)", previewTargets, true);
-        if (sniPairingEnabled()) renderChips(sniChipPreview, "SNI routes (" + selectedSourceSnis.size() + " source + " + lines(snisInput.getText().toString()).size() + " custom)", combinedSniTokens(), false);
+        renderChips(targetChipPreview, "Source preview (" + selectedSourceTargets.size() + " managed tokens + " + sampledCustomTargets().size() + " custom -> " + Math.min(estimatedTargets, targetCap) + " endpoints, " + previewTargets.size() + " previewed)", previewTargets, true);
+        if (sniPairingEnabled()) renderChips(sniChipPreview, "SNI routes (" + selectedSourceSnis.size() + " default + " + sampledCustomSnis().size() + " custom)", combinedSniTokens(), false);
         else renderChips(sniChipPreview, "SNI pairing disabled", Collections.emptyList(), false);
         updateSourceHealth(targetTokens, estimatedTargets, targetCap);
         updateScanPlanPreview();
@@ -912,14 +871,22 @@ public class MainActivity extends Activity {
 
     private List<String> combinedTargetTokens() {
         LinkedHashSet<String> merged = new LinkedHashSet<>(selectedSourceTargets);
-        merged.addAll(lines(targetsInput == null ? "" : targetsInput.getText().toString()));
+        merged.addAll(sampledCustomTargets());
         return new ArrayList<>(merged);
     }
 
     private List<String> combinedSniTokens() {
         LinkedHashSet<String> merged = new LinkedHashSet<>(selectedSourceSnis);
-        merged.addAll(lines(snisInput == null ? "" : snisInput.getText().toString()));
+        merged.addAll(sampledCustomSnis());
         return new ArrayList<>(merged);
+    }
+
+    private LinkedHashSet<String> sampledCustomTargets() {
+        return sampleSource(lines(targetsInput == null ? "" : targetsInput.getText().toString()), customTargetSampleInput == null ? 0 : intValue(customTargetSampleInput, 0));
+    }
+
+    private LinkedHashSet<String> sampledCustomSnis() {
+        return sampleSource(lines(snisInput == null ? "" : snisInput.getText().toString()), customSniSampleInput == null ? 0 : intValue(customSniSampleInput, 0));
     }
 
     private void updateScanPlanPreview() {
@@ -1106,125 +1073,122 @@ public class MainActivity extends Activity {
                 .setTitle("MaybeEdgeScanner guide")
                 .setMessage(
                         "What to scan\n" +
-                        "Targets are IPs, domains, or CIDR ranges. Presets add bundled Akamai, AWS CloudFront, Fastly, other cloud, and community edge corpora.\n\n" +
+                        "Targets are IPs, domains, or CIDR ranges. Source checkboxes enable bundled Akamai, AWS CloudFront, Fastly, other cloud, and community edge corpora. Use 0 for a full corpus or type an exact sample count.\n\n" +
                         "SNI hosts\n" +
-                        "SNI is the hostname sent during TLS. Use preset SNIs or add your own domains. Enable All SNI hosts for deeper matching; leave it off for faster scans.\n\n" +
+                        "SNI is the hostname sent during TLS. Toggle the default SNI corpus, let enabled providers add relevant host routes, or add your own domains. Enable All SNI hosts for deeper matching; leave it off for faster scans.\n\n" +
                         "Profiles\n" +
                         "Quick TCP checks reachability. Standard TLS verifies TLS. Deep HTTP + SNI adds HTTP HEAD checks. Verify CDN edge favors confirmed working CDN-like endpoints.\n\n" +
                         "Workflows\n" +
-                        "Single runs one selected profile. Auto multi-step ladder runs TCP, then TLS, then HTTP/SNI, then CDN verification. Manual selected steps runs only the checked stages, useful when you want a focused pass without changing presets.\n\n" +
+                        "Single runs one selected profile. Auto multi-step ladder runs TCP, then TLS, then HTTP/SNI, then CDN verification. Manual selected steps runs only the checked stages, useful when you want a focused pass without changing source selections.\n\n" +
                         "Visual modes\n" +
                         "Comfort is the default card layout. Contrast avoids color-only status cues and increases card opacity. Compact reduces spacing so more edges fit on screen.\n\n" +
                         "Performance parameters\n" +
-                        "Total cap limits expanded CIDRs. Batch controls how many targets run per wave. Threads controls parallel sockets. Timeout ms controls how long each connect/TLS/HTTP attempt can wait.\n\n" +
+                        "Total cap is the run limit after CIDR/range expansion; raise it when you intentionally want full subnets or very large provider corpora. Batch controls how many targets run per wave. Threads controls parallel sockets. Timeout ms controls how long each connect/TLS/HTTP attempt can wait.\n\n" +
                         "Filtering and sorting\n" +
-                        "Results owns all browsing controls: Working only, TLS/HTTP only, HTTP only, Known CDN only, TLS 1.3 only, provider preset, SNI filter, CDN text filter, certificate filter, max latency, visible card limit, and min score. Sort by Score to surface the strongest candidates.\n\n" +
+                        "Results owns all browsing controls: Working only, TLS/HTTP only, HTTP only, Known CDN only, TLS 1.3 only, provider filter, SNI filter, CDN text filter, certificate filter, max latency, visible card limit, and min score. Sort by Score to surface the strongest candidates.\n\n" +
                         "Copy and export\n" +
-                        "Copy filtered uses exactly the rows currently visible after filters and sort. Choose line-separated IPs, comma-separated IPs, IP SNI pairs, CSV, or JSON. Copy never replaces the card surface; it only reports status.")
+                        "Copy filtered uses exactly the rows currently visible after filters and sort. Choose line-separated IPs, comma-separated IPs, IP SNI pairs, SNI only, CSV, or JSON. Copy never replaces the card surface; it only reports status.")
                 .setPositiveButton("Got it", null)
                 .show();
     }
 
     private void loadDefaults() {
         status.setText("Loading sources");
-        final int defaultCommunitySample = Math.max(1, intValue(communitySampleInput, 256));
         new Thread(() -> {
-            LinkedHashSet<String> targets = new LinkedHashSet<>(loadAsset("default_targets.txt"));
-            targets.addAll(loadAsset("default_edges_extra.txt"));
-            targets.addAll(sampleSource(communityEdgeCorpus("scan-corpora/maybepsiphon-edge-ips.txt", "scan-corpora/community-edge-cidrs-24.txt"), defaultCommunitySample));
-            LinkedHashSet<String> snis = new LinkedHashSet<>(loadAsset("default_snis.txt"));
-            snis.addAll(loadAsset("scan-corpora/maybepsiphon-sni-hosts.txt"));
+            warmSourceCaches();
             ui.post(() -> {
                 suppressUiRefresh = true;
-                selectedSourceTargets.clear();
-                selectedSourceTargets.addAll(targets);
-                selectedSourceSnis.clear();
-                if (sniPairingEnabled()) selectedSourceSnis.addAll(snis);
+                if (communitySourceEnabled != null) communitySourceEnabled.setChecked(true);
+                if (defaultSniEnabled != null) defaultSniEnabled.setChecked(true);
                 targetsInput.setText("");
                 snisInput.setText("");
                 suppressUiRefresh = false;
                 status.setText("Ready");
                 renderTokenPreviews();
-                updatePresetPreview();
             });
         }, "source-loader").start();
     }
 
-    private void applyPreset(boolean append) {
-        Preset preset = loadSelectedPreset();
-        suppressUiRefresh = true;
-        if (append) {
-            selectedSourceTargets.addAll(preset.targets);
-            if (sniPairingEnabled()) selectedSourceSnis.addAll(preset.snis);
-        } else {
-            selectedSourceTargets.clear();
-            selectedSourceTargets.addAll(preset.targets);
-            selectedSourceSnis.clear();
-            if (sniPairingEnabled()) selectedSourceSnis.addAll(preset.snis);
+    private void warmSourceCaches() {
+        loadAsset("default_targets.txt");
+        loadAsset("default_edges_extra.txt");
+        communityEdgeCorpus("scan-corpora/maybepsiphon-edge-ips.txt", "scan-corpora/community-edge-cidrs-24.txt");
+        loadAsset("default_snis.txt");
+        loadAsset("scan-corpora/maybepsiphon-sni-hosts.txt");
+        loadAssetTokens("scan-corpora/akamai-AS20940.json");
+        loadAsset("scan-corpora/akamai-hosts-184x.txt");
+        loadAssetTokens("scan-corpora/aws-cloudfront-ranges.txt");
+        loadAssetTokens("scan-corpora/fastly-AS54113.json");
+        loadAssetTokens("scan-corpora/cloudflare-ranges.txt");
+        loadAssetTokens("scan-corpora/github-pages-ranges.txt");
+        loadAssetTokens("scan-corpora/azure-frontdoor-ranges.txt");
+        loadAssetTokens("scan-corpora/google-cdn-ranges.txt");
+        loadAssetTokens("scan-corpora/bunny-ranges.txt");
+        loadAssetTokens("scan-corpora/stackpath-edgio-ranges.txt");
+        loadAssetTokens("scan-corpora/other-cloud-ranges.txt");
+    }
+
+    private void rebuildManagedSources() {
+        selectedSourceTargets.clear();
+        selectedSourceSnis.clear();
+        ArrayList<String> enabled = new ArrayList<>();
+        if (checked(defaultSniEnabled)) {
+            selectedSourceSnis.addAll(loadAsset("default_snis.txt"));
+            selectedSourceSnis.addAll(loadAsset("scan-corpora/maybepsiphon-sni-hosts.txt"));
         }
-        suppressUiRefresh = false;
-        String summary = preset.name + ": " + preset.targets.size() + " managed target tokens" +
-                (sniPairingEnabled() ? ", " + preset.snis.size() + " managed SNI" : ", IP-only mode") +
-                " | " + preset.detail + " | Custom text boxes are left untouched; Total cap applies after expansion.";
-        presetSummaryView.setText(summary);
-        renderTokenPreviews();
-        toast((append ? "Added " : "Replaced managed sources with ") + preset.name);
-    }
-
-    private void updatePresetPreview() {
-        if (presetSummaryView == null || presetSpinner == null || communitySampleInput == null) return;
-        Preset preset = loadSelectedPreset();
-        int expandedPreview = estimateExpandedTargetCount(preset.targets, 200000);
-        presetSummaryView.setText("Selected preset preview\n" +
-                preset.name + ": " + preset.targets.size() + " managed target tokens -> " + expandedPreview + " endpoint preview" +
-                (sniPairingEnabled() ? ", " + preset.snis.size() + " managed SNI routes" : ", IP-only scanner") + "\n" +
-                trim(preset.detail, 180) + "\n" +
-                "Choose a corpus, tune samples, then Replace/Add managed sources. Custom text boxes are only for manual additions/removals.");
-        updateScanPlanPreview();
-    }
-
-    private Preset loadSelectedPreset() {
-        int selected = presetSpinner.getSelectedItemPosition();
-        Preset p = new Preset(String.valueOf(presetSpinner.getSelectedItem()));
-        p.snis.addAll(loadAsset("default_snis.txt"));
-        p.snis.addAll(loadAsset("scan-corpora/maybepsiphon-sni-hosts.txt"));
-        if (selected == 0 || selected == 6) {
+        if (checked(communitySourceEnabled)) {
             int count = intValue(communitySampleInput, 0);
-            addAll(p, "app defaults", sampleSource(loadAsset("default_targets.txt"), count));
-            addAll(p, "extra edges", sampleSource(loadAsset("default_edges_extra.txt"), count));
-            addAll(p, "community tested /24s", sampleSource(communityEdgeCorpus("scan-corpora/maybepsiphon-edge-ips.txt", "scan-corpora/community-edge-cidrs-24.txt"), count));
+            selectedSourceTargets.addAll(sampleSource(loadAsset("default_targets.txt"), count));
+            selectedSourceTargets.addAll(sampleSource(loadAsset("default_edges_extra.txt"), count));
+            selectedSourceTargets.addAll(sampleSource(communityEdgeCorpus("scan-corpora/maybepsiphon-edge-ips.txt", "scan-corpora/community-edge-cidrs-24.txt"), count));
+            enabled.add("Community");
         }
-        if (selected == 1 || selected == 6) {
+        if (checked(akamaiSourceEnabled)) {
             int count = intValue(akamaiSampleInput, 0);
-            addAll(p, "Akamai AS20940", sampleSource(loadAssetTokens("scan-corpora/akamai-AS20940.json"), count));
-            addAll(p, "Akamai 184.x hosts", sampleSource(loadAsset("scan-corpora/akamai-hosts-184x.txt"), count));
-            addRelevantSni(p.snis, "akamai");
+            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/akamai-AS20940.json"), count));
+            selectedSourceTargets.addAll(sampleSource(loadAsset("scan-corpora/akamai-hosts-184x.txt"), count));
+            addRelevantSni(selectedSourceSnis, "akamai");
+            enabled.add("Akamai");
         }
-        if (selected == 2 || selected == 6) {
-            addAll(p, "AWS CloudFront", sampleSource(loadAssetTokens("scan-corpora/aws-cloudfront-ranges.txt"), intValue(cloudfrontSampleInput, 0)));
-            addRelevantSni(p.snis, "aws");
-            addRelevantSni(p.snis, "cloudfront");
+        if (checked(cloudfrontSourceEnabled)) {
+            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/aws-cloudfront-ranges.txt"), intValue(cloudfrontSampleInput, 0)));
+            addRelevantSni(selectedSourceSnis, "aws");
+            addRelevantSni(selectedSourceSnis, "cloudfront");
+            enabled.add("CloudFront");
         }
-        if (selected == 3 || selected == 6) {
-            addAll(p, "Fastly AS54113", sampleSource(loadAssetTokens("scan-corpora/fastly-AS54113.json"), intValue(fastlySampleInput, 0)));
-            addRelevantSni(p.snis, "fastly");
+        if (checked(fastlySourceEnabled)) {
+            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/fastly-AS54113.json"), intValue(fastlySampleInput, 0)));
+            addRelevantSni(selectedSourceSnis, "fastly");
+            enabled.add("Fastly");
         }
-        if (selected == 4 || selected == 6) {
-            addAll(p, "Cloudflare", sampleSource(loadAssetTokens("scan-corpora/cloudflare-ranges.txt"), intValue(cloudflareSampleInput, 0)));
-            addRelevantSni(p.snis, "cloudflare");
+        if (checked(cloudflareSourceEnabled)) {
+            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/cloudflare-ranges.txt"), intValue(cloudflareSampleInput, 0)));
+            addRelevantSni(selectedSourceSnis, "cloudflare");
+            enabled.add("Cloudflare");
         }
-        if (selected == 5 || selected == 6) {
+        if (checked(otherCdnSourceEnabled)) {
             int count = intValue(otherCdnSampleInput, 0);
-            addAll(p, "GitHub Pages", sampleSource(loadAssetTokens("scan-corpora/github-pages-ranges.txt"), count));
-            addAll(p, "Azure Front Door", sampleSource(loadAssetTokens("scan-corpora/azure-frontdoor-ranges.txt"), count));
-            addAll(p, "Google CDN", sampleSource(loadAssetTokens("scan-corpora/google-cdn-ranges.txt"), count));
-            addAll(p, "Bunny CDN", sampleSource(loadAssetTokens("scan-corpora/bunny-ranges.txt"), count));
-            addAll(p, "StackPath/Edgio", sampleSource(loadAssetTokens("scan-corpora/stackpath-edgio-ranges.txt"), count));
-            addAll(p, "conventional CDN/cloud ranges", sampleSource(loadAssetTokens("scan-corpora/other-cloud-ranges.txt"), count));
-            addRelevantSni(p.snis, "cloudflare");
-            addRelevantSni(p.snis, "mapbox");
+            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/github-pages-ranges.txt"), count));
+            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/azure-frontdoor-ranges.txt"), count));
+            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/google-cdn-ranges.txt"), count));
+            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/bunny-ranges.txt"), count));
+            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/stackpath-edgio-ranges.txt"), count));
+            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/other-cloud-ranges.txt"), count));
+            addRelevantSni(selectedSourceSnis, "cloudflare");
+            addRelevantSni(selectedSourceSnis, "mapbox");
+            enabled.add("Other providers");
         }
-        return p;
+        if (sourceSummaryView != null) {
+            int estimated = estimateExpandedTargetCount(new ArrayList<>(selectedSourceTargets), 200000);
+            sourceSummaryView.setText("Managed sources\n" +
+                    (enabled.isEmpty() ? "No target corpus enabled" : joinComma(enabled)) + "\n" +
+                    selectedSourceTargets.size() + " target tokens -> about " + estimated + " expanded endpoints before Total cap.\n" +
+                    selectedSourceSnis.size() + " default/provider SNI routes " + (checked(defaultSniEnabled) ? "enabled" : "disabled") + "; custom typed targets and SNIs are sampled separately.");
+        }
+    }
+
+    private boolean checked(CheckBox box) {
+        return box != null && box.isChecked();
     }
 
     private LinkedHashSet<String> sampleSource(Collection<String> values, int count) {
@@ -1301,17 +1265,6 @@ public class MainActivity extends Activity {
         return out;
     }
 
-    private void addAll(Preset preset, String label, Collection<String> values) {
-        int before = preset.targets.size();
-        preset.targets.addAll(values);
-        int added = preset.targets.size() - before;
-        int requested = values == null ? 0 : values.size();
-        int skipped = Math.max(0, requested - added);
-        if (preset.detail.length() > 0) preset.detail += " | ";
-        preset.detail += label + " sampled " + requested + ", added " + added;
-        if (skipped > 0) preset.detail += ", deduped " + skipped;
-    }
-
     private void addRelevantSni(LinkedHashSet<String> snis, String needle) {
         for (String sni : loadAsset("scan-corpora/maybepsiphon-sni-hosts.txt")) {
             if (sni.toLowerCase(Locale.US).contains(needle)) snis.add(sni);
@@ -1324,6 +1277,7 @@ public class MainActivity extends Activity {
             selectTab(1);
             return;
         }
+        rebuildManagedSources();
         List<String> targets = expandTargets(combinedTargetTokens(), Math.max(1, intValue(totalInput, 5000)));
         List<String> snis = sniPairingEnabled() ? combinedSniTokens() : Collections.singletonList("");
         List<Integer> ports = parsePorts(portsInput.getText().toString());
@@ -1530,7 +1484,7 @@ public class MainActivity extends Activity {
         ui.postDelayed(() -> {
             renderQueued.set(false);
             renderResults();
-        }, 900);
+        }, 2500);
     }
 
     private void renderResults() {
@@ -1824,7 +1778,15 @@ public class MainActivity extends Activity {
         panel.setPadding(dp(12), dp(10), dp(12), dp(12));
         panel.setBackground(glassBg(Color.rgb(8, 24, 36), Color.argb(120, 255, 255, 255)));
         panel.addView(text("Heatmap overview", 15, Color.WHITE, true));
-        panel.addView(text("Each tile is a filtered result: green HTTP, cyan TLS, amber TCP, red failed.", 12, MUTED, false));
+        int http = 0, tls = 0, tcp = 0, down = 0;
+        for (Result r : rows) {
+            if (r.httpPass) http++;
+            else if (r.tlsPass) tls++;
+            else if (r.tcpPass) tcp++;
+            else down++;
+        }
+        panel.addView(text("Filtered mix: " + http + " HTTP, " + tls + " TLS, " + tcp + " TCP, " + down + " failed. Tap any tile to copy that result.", 12, MUTED, false));
+        panel.addView(text("Colors: green HTTP, cyan TLS, amber TCP, red failed.", 11, MUTED, false));
         int columns = 12;
         LinearLayout row = null;
         int limit = Math.min(rows.size(), 512);
@@ -2003,9 +1965,9 @@ public class MainActivity extends Activity {
         int format = exportSpinner.getSelectedItemPosition();
         StringBuilder sb = new StringBuilder();
         try {
-            if (format == 3) {
+            if (format == 4) {
                 sb.append("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,cdn,quality,reason\n");
-            } else if (format == 4) {
+            } else if (format == 5) {
                 JSONArray arr = new JSONArray();
                 for (Result r : rows) arr.put(r.json());
                 copyToClipboardOrDialog("JSON", arr.toString(2));
@@ -2016,11 +1978,13 @@ public class MainActivity extends Activity {
                 if (format == 0) dedupe.add(r.ip);
                 else if (format == 1) dedupe.add(r.ip);
                 else if (format == 2) dedupe.add(r.address() + " " + r.sni);
-                else if (format == 3) sb.append(r.csv()).append('\n');
+                else if (format == 3 && r.sni != null && !r.sni.isEmpty()) dedupe.add(r.sni);
+                else if (format == 4) sb.append(r.csv()).append('\n');
             }
             if (format == 0) sb.append(joinLines(dedupe));
             else if (format == 1) sb.append(joinComma(dedupe));
             else if (format == 2) sb.append(joinLines(dedupe));
+            else if (format == 3) sb.append(joinLines(dedupe));
             copyToClipboardOrDialog(String.valueOf(exportSpinner.getSelectedItem()), sb.toString());
         } catch (Exception e) {
             toast("Copy failed: " + e.getMessage());
@@ -2552,12 +2516,28 @@ public class MainActivity extends Activity {
         Intent battery = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         int level = battery == null ? -1 : battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
         int scale = battery == null ? -1 : battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+        int status = battery == null ? -1 : battery.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+        int plugged = battery == null ? 0 : battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
         int pct = level >= 0 && scale > 0 ? Math.round(level * 100f / scale) : -1;
+        boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL;
+        String plug = plugged == BatteryManager.BATTERY_PLUGGED_USB ? "usb" :
+                plugged == BatteryManager.BATTERY_PLUGGED_AC ? "ac" :
+                plugged == BatteryManager.BATTERY_PLUGGED_WIRELESS ? "wireless" : "unplugged";
         Runtime rt = Runtime.getRuntime();
         long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
-        cachedResourceLine = "battery " + (pct >= 0 ? pct + "%" : "n/a") + " | heap " + usedMb + "MB";
+        long maxMb = rt.maxMemory() / (1024 * 1024);
+        cachedResourceLine = "power " + (pct >= 0 ? pct + "%" : "n/a") + " " +
+                (charging ? "charging" : "battery") + "/" + plug +
+                " | heap " + usedMb + "/" + maxMb + "MB" +
+                " | cores " + rt.availableProcessors();
         cachedResourceLineAt = now;
         return cachedResourceLine;
+    }
+
+    private String deviceLine() {
+        String model = (Build.MANUFACTURER + " " + Build.MODEL).trim();
+        String abi = Build.SUPPORTED_ABIS != null && Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "unknown ABI";
+        return model + " | Android " + Build.VERSION.RELEASE + " API " + Build.VERSION.SDK_INT + " | " + abi;
     }
     private void appendLog(String s) {
         ui.post(() -> {
@@ -2634,31 +2614,49 @@ public class MainActivity extends Activity {
         card.setPadding(dp(12), dp(10), dp(12), dp(10));
         setOuterMargin(card, 0, dp(8), 0, dp(8));
         card.addView(text("Mobile radio control is device-specific", 12, Color.rgb(210, 231, 240), true));
-        card.addView(text("Shizuku actions are isolated from scanning and run only after a tap plus confirmation. Read current values first, keep Auto available as the reset path, and expect OEM/SIM-slot differences.", 11, MUTED, false));
+        card.addView(text("A normal APK cannot bundle its own Shizuku-like privileged bridge. Radio writes require a running Shizuku/Sui/root/system context; without that, this panel stays useful as read/status guidance plus direct Android settings shortcuts.", 11, MUTED, false));
 
         shizukuStatusView = panelText("Shizuku: checking");
         card.addView(shizukuStatusView);
+        shizukuNextStepView = quietNote(shizukuUnavailableNextStep());
+        card.addView(shizukuNextStepView);
 
         LinearLayout statusRow = row();
         Button check = button("Check service", Color.rgb(24, 45, 58), Color.WHITE);
         Button request = button("Request access", Color.rgb(24, 45, 58), Color.WHITE);
-        Button read = button("Read current", Color.rgb(24, 45, 58), Color.WHITE);
         check.setOnClickListener(v -> refreshShizukuState());
         request.setOnClickListener(v -> requestShizukuPermission());
-        read.setOnClickListener(v -> runShizukuRadioCommand("Read radio modes", buildReadModesCommand(), false));
         statusRow.addView(check, weight());
         statusRow.addView(request, weight());
-        statusRow.addView(read, weight());
         card.addView(statusRow);
 
+        LinearLayout probeRow = row();
+        Button probe = button("Bridge probe", Color.rgb(24, 45, 58), Color.WHITE);
+        Button read = button("Read current", Color.rgb(24, 45, 58), Color.WHITE);
+        probe.setOnClickListener(v -> runShizukuRadioCommand("Bridge capability probe", buildBridgeProbeCommand(), false));
+        read.setOnClickListener(v -> runShizukuRadioCommand("Read radio modes", buildReadModesCommand(), false));
+        probeRow.addView(probe, weight());
+        probeRow.addView(read, weight());
+        card.addView(probeRow);
+
         LinearLayout shizukuAppRow = row();
-        Button openShizuku = button("Open Shizuku", Color.rgb(24, 45, 58), Color.WHITE);
+        Button openShizuku = button("Open manager", Color.rgb(24, 45, 58), Color.WHITE);
         Button shizukuGuide = button("Setup guide", Color.rgb(24, 45, 58), Color.WHITE);
         openShizuku.setOnClickListener(v -> openShizukuManager());
         shizukuGuide.setOnClickListener(v -> openUrl("https://shizuku.rikka.app/guide/setup/"));
         shizukuAppRow.addView(openShizuku, weight());
         shizukuAppRow.addView(shizukuGuide, weight());
         card.addView(shizukuAppRow);
+
+        LinearLayout installRow = row();
+        Button shizukuRelease = button("GitHub APK", Color.rgb(24, 45, 58), Color.WHITE);
+        Button developer = button("Developer options", Color.rgb(24, 45, 58), Color.WHITE);
+        shizukuRelease.setOnClickListener(v -> openUrl("https://github.com/RikkaApps/Shizuku/releases/latest"));
+        developer.setOnClickListener(v -> openAndroidSettings(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS, "Developer options unavailable"));
+        installRow.addView(shizukuRelease, weight());
+        installRow.addView(developer, weight());
+        card.addView(installRow);
+        card.addView(collapsibleBox("Shizuku setup notes", shizukuSetupNotesPanel(), false));
 
         LinearLayout modeRow = row();
         Button lteOnly = button("Prefer LTE", Color.rgb(24, 45, 58), Color.WHITE);
@@ -2671,7 +2669,7 @@ public class MainActivity extends Activity {
         modeRow.addView(nrLte, weight());
         modeRow.addView(auto, weight());
         card.addView(modeRow);
-        card.addView(quietNote("The app writes common preferred_network_mode keys, then immediately reads them back. If readback differs or service drops, use Reset Auto or Android network settings."));
+        card.addView(quietNote("Writes are explicit, confirmed, and read back immediately. LTE/5G constants vary by OEM and SIM slot; if service drops or readback differs, use Reset Auto or Android network settings."));
 
         LinearLayout settingsRow = row();
         Button mobile = button("Mobile settings", Color.rgb(24, 45, 58), Color.WHITE);
@@ -2695,11 +2693,44 @@ public class MainActivity extends Activity {
         custom.addView(applyCustom);
         card.addView(collapsibleBox("Advanced radio key", custom, false));
 
-        shizukuOutputView = panelText("No radio command has run in this session.");
+        shizukuOutputView = panelText("No privileged action has run in this session. Use Bridge probe to verify UID, Android version, and command reach before writing radio settings.");
         shizukuOutputView.setTypeface(Typeface.MONOSPACE);
         shizukuOutputView.setTextIsSelectable(true);
         card.addView(shizukuOutputView);
+        Button copyOutput = button("Copy output", Color.rgb(24, 45, 58), Color.WHITE);
+        copyOutput.setOnClickListener(v -> copyShizukuOutput());
+        card.addView(copyOutput);
         return card;
+    }
+
+    private LinearLayout shizukuHealthTile() {
+        LinearLayout card = column();
+        card.setBackground(glassBg(Color.rgb(9, 23, 34), Color.argb(85, 255, 255, 255)));
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        setOuterMargin(card, 0, dp(8), 0, dp(8));
+        card.addView(text("Shizuku health", 12, Color.rgb(210, 231, 240), true));
+        shizukuHealthTileView = panelText(buildShizukuHealthText());
+        card.addView(shizukuHealthTileView);
+        LinearLayout row = row();
+        Button refresh = button("Refresh health", Color.rgb(24, 45, 58), Color.WHITE);
+        Button open = button("Open Shizuku", Color.rgb(24, 45, 58), Color.WHITE);
+        refresh.setOnClickListener(v -> refreshShizukuState());
+        open.setOnClickListener(v -> openShizukuManager());
+        row.addView(refresh, weight());
+        row.addView(open, weight());
+        card.addView(row);
+        return card;
+    }
+
+    private LinearLayout shizukuSetupNotesPanel() {
+        LinearLayout panel = column();
+        panel.addView(quietNote("Android 11 and newer: Shizuku can usually be started entirely on-device through Wireless debugging in Developer options. Some OEMs move or rename that page, so the Developer options button is kept beside the setup links."));
+        panel.addView(quietNote("Android 10 and older: Shizuku still works, but starting it normally requires computer ADB after boot. Rooted devices can use root-backed Shizuku or Sui instead."));
+        panel.addView(quietNote("ADB shell is not root. It is UID 2000 and receives many Android shell permissions, but vendor SELinux policy, hidden APIs, modem firmware, and carrier overlays can still block radio changes."));
+        panel.addView(quietNote("Root/Sui is UID 0 and can reach more, but the app still keeps all write operations behind confirmations and immediate readback."));
+        panel.addView(quietNote("Prefer the official GitHub release for direct APK install/update checks; the official Shizuku download page remains useful when users want Play Store or F-Droid options."));
+        panel.addView(quietNote("Long-term deeper integration should use Shizuku UserService/AIDL for rich privileged APIs. This panel intentionally keeps radio actions narrow and auditable."));
+        return panel;
     }
 
     private void addShizukuListener() {
@@ -2720,6 +2751,9 @@ public class MainActivity extends Activity {
         if (requestCode != SHIZUKU_REQUEST_CODE) return;
         ui.post(() -> {
             refreshShizukuState();
+            setShizukuOutput(grantResult == PackageManager.PERMISSION_GRANTED
+                    ? "Shizuku access granted. Run Bridge probe next, then Read current."
+                    : "Shizuku access denied. Open Shizuku, allow this app under authorized apps, then tap Check service.");
             toast(grantResult == PackageManager.PERMISSION_GRANTED ? "Shizuku access granted" : "Shizuku access denied");
         });
     }
@@ -2741,51 +2775,135 @@ public class MainActivity extends Activity {
     }
 
     private void refreshShizukuState() {
+        updateShizukuHealthTile();
         if (shizukuStatusView == null) return;
         if (!shizukuAvailable()) {
-            shizukuStatusView.setText("Shizuku: not running\nStart Shizuku, then tap Check. The regular Android settings buttons still work without it.");
+            shizukuStatusView.setText("Privileged bridge: unavailable\nBinder: not alive\n" + shizukuSetupPathLine() + "\nRadio writes cannot be self-contained in a regular APK. Start Shizuku, Sui, root, or a local ADB bridge; Android settings shortcuts still work.");
+            setShizukuNextStep(shizukuUnavailableNextStep());
             return;
         }
         try {
             if (Shizuku.isPreV11()) {
                 shizukuStatusView.setText("Shizuku: unsupported server\nThis app needs Shizuku v11+ permission APIs.");
+                setShizukuNextStep("Next: update Shizuku from the official GitHub APK, reopen it, then tap Check service.");
                 return;
             }
         } catch (Throwable ignored) {
         }
         boolean granted = shizukuPermissionGranted();
         StringBuilder sb = new StringBuilder();
-        sb.append("Shizuku: ").append(granted ? "ready" : "permission needed");
-        try { sb.append("\nVersion: ").append(Shizuku.getVersion()); } catch (Throwable ignored) {}
-        try { sb.append("\nShell UID: ").append(Shizuku.getUid()); } catch (Throwable ignored) {}
-        sb.append("\nRadio writes: explicit user action only");
+        int uid = -1;
+        sb.append("Privileged bridge: ").append(granted ? "ready" : "permission needed");
+        sb.append("\nBinder: alive");
+        try { sb.append("\nServer: Shizuku v").append(Shizuku.getVersion()); } catch (Throwable ignored) {}
+        try {
+            uid = Shizuku.getUid();
+            sb.append('\n').append(shizukuIdentityLine(uid));
+        } catch (Throwable ignored) {
+            sb.append("\nPrivilege: unknown UID");
+        }
+        sb.append("\nPermission API: v11+ runtime grant");
+        sb.append('\n').append(shizukuSetupPathLine());
+        sb.append('\n').append(shizukuCapabilityHint(uid));
+        sb.append("\nRadio writes: confirmed action with readback");
         shizukuStatusView.setText(sb.toString());
+        setShizukuNextStep(granted
+                ? "Next: run Bridge probe, then Read current. Use radio writes only after the readback looks sane for this device and SIM."
+                : "Next: tap Request access, approve this app in Shizuku, then run Bridge probe.");
+        updateShizukuHealthTile();
+    }
+
+    private void updateShizukuHealthTile() {
+        if (shizukuHealthTileView != null) shizukuHealthTileView.setText(buildShizukuHealthText());
+    }
+
+    private String buildShizukuHealthText() {
+        boolean alive = shizukuAvailable();
+        if (!alive) {
+            return "Bridge: offline | Permission: not available | Backend: none\n"
+                    + shizukuSetupPathLine() + "\n"
+                    + "Last probe: " + shizukuLastProbeLine();
+        }
+        boolean preV11 = false;
+        boolean granted = false;
+        String version = "unknown";
+        int uid = -1;
+        try { preV11 = Shizuku.isPreV11(); } catch (Throwable ignored) {}
+        try { version = "v" + Shizuku.getVersion(); } catch (Throwable ignored) {}
+        if (!preV11) granted = shizukuPermissionGranted();
+        try { uid = Shizuku.getUid(); } catch (Throwable ignored) {}
+        String backend = uid == 0 ? "root UID 0" : (uid == 2000 ? "ADB shell UID 2000" : "UID " + (uid < 0 ? "unknown" : uid));
+        String permission = preV11 ? "unsupported server" : (granted ? "granted" : "needed");
+        return "Bridge: online | Permission: " + permission + " | Backend: " + backend + "\n"
+                + "Server: " + version + " | Last probe: " + shizukuLastProbeLine() + "\n"
+                + shizukuSetupPathLine();
+    }
+
+    private String shizukuLastProbeLine() {
+        if (lastShizukuProbeAt <= 0) return "not run";
+        long seconds = Math.max(0, (System.currentTimeMillis() - lastShizukuProbeAt) / 1000);
+        return seconds < 60 ? seconds + "s ago" : (seconds / 60) + "m ago";
+    }
+
+    private String shizukuSetupPathLine() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            return "Setup path: Wireless debugging on-device (Android " + Build.VERSION.RELEASE + ")";
+        }
+        return "Setup path: computer ADB after reboot on Android " + Build.VERSION.RELEASE + ", unless root/Sui is available";
+    }
+
+    private String shizukuUnavailableNextStep() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            return "Next: open Shizuku, start it with Wireless debugging, return here, then tap Check service.";
+        }
+        return "Next: start Shizuku with computer ADB after boot, or use root/Sui, then return and tap Check service.";
+    }
+
+    private void setShizukuNextStep(String text) {
+        if (shizukuNextStepView != null) shizukuNextStepView.setText(text);
+    }
+
+    private String shizukuIdentityLine(int uid) {
+        if (uid == 0) return "Privilege: root backend (UID 0)";
+        if (uid == 2000) return "Privilege: ADB shell backend (UID 2000)";
+        return "Privilege: backend UID " + uid;
+    }
+
+    private String shizukuCapabilityHint(int uid) {
+        if (uid == 0) return "Capability: root can reach more system APIs; commands still require confirmation here.";
+        if (uid == 2000) return "Capability: ADB shell can use many system permissions, but OEM and Android-version limits still apply.";
+        return "Capability: backend permissions vary; use Bridge probe before any write.";
     }
 
     private void requestShizukuPermission() {
         if (!shizukuAvailable()) {
             refreshShizukuState();
+            setShizukuOutput(shizukuUnavailableNextStep() + "\n\nUse GitHub APK if Shizuku is not installed or needs a direct update.");
             toast("Start Shizuku first");
             return;
         }
         if (shizukuPermissionGranted()) {
             refreshShizukuState();
+            setShizukuOutput("Shizuku is already allowed. Run Bridge probe next, then Read current.");
             toast("Shizuku is already allowed");
             return;
         }
         try {
             if (Shizuku.isPreV11()) {
                 setShizukuOutput("This device is running an unsupported Shizuku server. Update Shizuku, then try again.");
+                setShizukuNextStep("Next: update Shizuku from the official GitHub APK, reopen it, then tap Check service.");
                 return;
             }
             if (Shizuku.shouldShowRequestPermissionRationale()) {
                 setShizukuOutput("Shizuku permission was denied with rationale required. Open Shizuku, allow this app, then tap Check.");
+                setShizukuNextStep("Next: open Shizuku, allow this app under authorized apps, then tap Check service.");
                 toast("Allow this app inside Shizuku");
                 return;
             }
         } catch (Throwable ignored) {
         }
         try {
+            setShizukuNextStep("Next: approve the Shizuku permission dialog for this app.");
             Shizuku.requestPermission(SHIZUKU_REQUEST_CODE);
         } catch (Throwable e) {
             setShizukuOutput("Permission request failed: " + e.getClass().getSimpleName() + ": " + safeMessage(e));
@@ -2799,7 +2917,7 @@ public class MainActivity extends Activity {
             startActivity(intent);
         } catch (Throwable e) {
             setShizukuOutput("Could not open Shizuku manager: " + safeMessage(e));
-            openUrl("https://shizuku.rikka.app/download/");
+            openUrl("https://github.com/RikkaApps/Shizuku/releases/latest");
         }
     }
 
@@ -2846,6 +2964,18 @@ public class MainActivity extends Activity {
         return cmd.toString();
     }
 
+    private String buildBridgeProbeCommand() {
+        return "echo shizuku-bridge-probe; "
+                + "id; "
+                + "echo uid=$(id -u 2>/dev/null); "
+                + "echo sdk=$(getprop ro.build.version.sdk 2>/dev/null); "
+                + "echo release=$(getprop ro.build.version.release 2>/dev/null); "
+                + "echo device=$(getprop ro.product.manufacturer 2>/dev/null) $(getprop ro.product.model 2>/dev/null); "
+                + "echo airplane=$(settings get global airplane_mode_on 2>/dev/null); "
+                + "cmd connectivity help >/dev/null 2>&1 && echo connectivity-cmd=available || echo connectivity-cmd=limited; "
+                + buildReadModesCommand();
+    }
+
     private String buildPutModesCommand(String value) {
         StringBuilder cmd = new StringBuilder("echo applying-value-").append(value).append("; ");
         for (String key : RADIO_MODE_KEYS) {
@@ -2872,11 +3002,26 @@ public class MainActivity extends Activity {
             int exitCode = -1;
             try {
                 Process process = startShizukuShellProcess(command);
-                String stdout = readAll(process.getInputStream());
-                String stderr = readAll(process.getErrorStream());
-                exitCode = process.waitFor();
-                output = "Action: " + label + "\nExit: " + exitCode + "\n\n" + stdout.trim();
-                if (!stderr.trim().isEmpty()) output += "\n\nstderr:\n" + stderr.trim();
+                StringBuilder stdout = new StringBuilder();
+                StringBuilder stderr = new StringBuilder();
+                Thread stdoutThread = collectProcessStream(process.getInputStream(), stdout);
+                Thread stderrThread = collectProcessStream(process.getErrorStream(), stderr);
+                boolean finished = process.waitFor(9, java.util.concurrent.TimeUnit.SECONDS);
+                if (!finished) {
+                    process.destroy();
+                    exitCode = -2;
+                    output = "Action: " + label + "\nExit: timeout\n\nThe privileged command did not finish within 9 seconds. No follow-up command was queued.";
+                } else {
+                    exitCode = process.exitValue();
+                    joinQuietly(stdoutThread);
+                    joinQuietly(stderrThread);
+                    String stdoutText = bufferedText(stdout).trim();
+                    String stderrText = bufferedText(stderr).trim();
+                    output = "Action: " + label + "\nExit: " + exitCode + "\n\n" + stdoutText;
+                    if (!stderrText.isEmpty()) output += "\n\nstderr:\n" + stderrText;
+                }
+                joinQuietly(stdoutThread);
+                joinQuietly(stderrThread);
             } catch (Throwable e) {
                 output = "Action: " + label + "\nFailed: " + e.getClass().getSimpleName() + ": " + safeMessage(e);
             }
@@ -2884,6 +3029,9 @@ public class MainActivity extends Activity {
             final int finalExitCode = exitCode;
             ui.post(() -> {
                 shizukuCommandRunning.set(false);
+                if (finalExitCode == 0 && label.toLowerCase(Locale.US).contains("bridge capability")) {
+                    lastShizukuProbeAt = System.currentTimeMillis();
+                }
                 refreshShizukuState();
                 setShizukuOutput(finalOutput);
                 toast(finalExitCode == 0 ? (writeAction ? "Radio mode applied; readback shown" : "Radio modes read") : "Shizuku command failed");
@@ -2895,19 +3043,53 @@ public class MainActivity extends Activity {
         if (shizukuOutputView != null) shizukuOutputView.setText(text);
     }
 
+    private void copyShizukuOutput() {
+        String text = shizukuOutputView == null ? "" : shizukuOutputView.getText().toString();
+        if (text.trim().isEmpty()) {
+            toast("No Shizuku output yet");
+            return;
+        }
+        clip(text);
+        toast("Shizuku output copied");
+    }
+
     private Process startShizukuShellProcess(String command) throws Exception {
         Method newProcess = Shizuku.class.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
         newProcess.setAccessible(true);
         return (Process) newProcess.invoke(null, (Object) new String[]{"sh", "-c", command}, null, null);
     }
 
-    private String readAll(InputStream in) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line).append('\n');
+    private Thread collectProcessStream(InputStream in, StringBuilder out) {
+        Thread thread = new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    synchronized (out) {
+                        out.append(line).append('\n');
+                    }
+                }
+            } catch (IOException e) {
+                synchronized (out) {
+                    out.append("[stream] ").append(e.getClass().getSimpleName()).append(": ").append(safeMessage(e)).append('\n');
+                }
+            }
+        }, "shizuku-stream");
+        thread.start();
+        return thread;
+    }
+
+    private void joinQuietly(Thread thread) {
+        try {
+            thread.join(500);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
-        return sb.toString();
+    }
+
+    private String bufferedText(StringBuilder sb) {
+        synchronized (sb) {
+            return sb.toString();
+        }
     }
 
     private String safeMessage(Throwable e) {
@@ -2986,11 +3168,4 @@ public class MainActivity extends Activity {
     }
     private void setOuterMargin(View v, int l, int t, int r, int b) { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.setMargins(l, t, r, b); v.setLayoutParams(lp); }
 
-    private static class Preset {
-        final String name;
-        final LinkedHashSet<String> targets = new LinkedHashSet<>();
-        final LinkedHashSet<String> snis = new LinkedHashSet<>();
-        String detail = "";
-        Preset(String name) { this.name = name; }
-    }
 }
