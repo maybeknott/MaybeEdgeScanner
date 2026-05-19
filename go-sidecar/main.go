@@ -328,52 +328,6 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	flush(flusher)
 }
 
-func scanDNS(w http.ResponseWriter, r *http.Request) {
-	metricDNSRuns.Add(1)
-	var hosts []string
-	if r.Method == http.MethodGet {
-		hosts = unique(strings.FieldsFunc(r.URL.Query().Get("host"), func(ch rune) bool {
-			return ch == ',' || ch == ';' || ch == '\n' || ch == '\r' || ch == '\t' || ch == ' '
-		}))
-	} else if r.Method == http.MethodPost {
-		var req scanRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		req.normalize()
-		hosts = req.Targets
-	} else {
-		http.Error(w, "GET or POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	if len(hosts) > 500 {
-		hosts = hosts[:500]
-	}
-	type dnsRow struct {
-		Host      string   `json:"host"`
-		Addresses []string `json:"addresses"`
-		Error     string   `json:"error,omitempty"`
-	}
-	rows := make([]dnsRow, 0, len(hosts))
-	for _, host := range hosts {
-		row := dnsRow{Host: host}
-		if net.ParseIP(host) != nil {
-			row.Addresses = []string{host}
-		} else if ips, err := net.LookupIP(host); err != nil {
-			row.Error = err.Error()
-		} else {
-			for _, ip := range ips {
-				row.Addresses = append(row.Addresses, ip.String())
-			}
-			row.Addresses = unique(row.Addresses)
-		}
-		rows = append(rows, row)
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(rows), "results": rows})
-}
-
 func metrics(w http.ResponseWriter, _ *http.Request) {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
