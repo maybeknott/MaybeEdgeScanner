@@ -2,10 +2,10 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0D1C27"
+    android:background="#091923"
     android:gravity="center"
     android:orientation="vertical"
-    android:padding="10dp">
+    android:padding="12dp">
 
     <TextView
         android:layout_width="match_parent"
@@ -13,13 +13,22 @@
         android:gravity="center"
         android:text="MaybeEdgeScanner"
         android:textColor="#FFFFFF"
-        android:textSize="13sp"
+        android:textSize="14sp"
         android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:text="Sources -> Results"
+        android:textColor="#B9D2DE"
+        android:textSize="11sp" />
 
     <Button
         android:id="@+id/widget_start_scan"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Start scan" />
+        android:minHeight="42dp"
+        android:text="Start defaults" />
 
 </LinearLayout>

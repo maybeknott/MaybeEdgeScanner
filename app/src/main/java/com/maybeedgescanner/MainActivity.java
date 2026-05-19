@@ -7,6 +7,7 @@ import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
@@ -47,16 +48,24 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.SSLParameters;
 
+import rikka.shizuku.Shizuku;
+
 public class MainActivity extends Activity {
     public static final String ACTION_QUICK_SCAN = "com.maybeedgescanner.action.QUICK_SCAN";
     private static final int BLUE = Color.rgb(55, 212, 255);
-    private static final int BG = Color.rgb(7, 16, 24);
     private static final int PANEL = Color.rgb(13, 28, 39);
     private static final int FIELD = Color.rgb(9, 20, 29);
     private static final int MUTED = Color.rgb(140, 161, 178);
     private static final String SUPPORT_GITHUB = "https://github.com/maybeknott/MaybeEdgeScanner/";
     private static final String SUPPORT_EVM = "0x8988ed09DA218799e99Fb1E94243cC1C1cB41A40";
     private static final String SUPPORT_BTC = "bc1qt2mxzmlcv3re4pjemshejzq0hj3c8dgp0e5tvx";
+    private static final int SHIZUKU_REQUEST_CODE = 4601;
+    private static final String[] RADIO_MODE_KEYS = {
+            "preferred_network_mode",
+            "preferred_network_mode0",
+            "preferred_network_mode1",
+            "preferred_network_mode2"
+    };
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final AtomicBoolean stop = new AtomicBoolean(false);
@@ -66,37 +75,51 @@ public class MainActivity extends Activity {
     private ExecutorService executor;
 
     private LinearLayout resultList;
-    private LinearLayout targetTab, liveTab, vaultTab;
+    private LinearLayout targetTab, liveTab, diagnosticsTab;
     private LinearLayout targetChipPreview, sniChipPreview;
     private LinearLayout analyticsPanel;
     private LinearLayout stableHistoryPanel;
     private ScrollView mainScroll;
-    private View targetAnchor, liveAnchor, vaultAnchor;
+    private View targetAnchor, liveAnchor, diagnosticsAnchor;
     private ProgressBar progress;
-    private TextView status, metrics, bestView, countersView, logView, networkBanner, homeDashboardView, copyFallbackView;
+    private TextView status, metrics, bestView, countersView, logView, networkBanner, homeDashboardView;
+    private TextView shizukuStatusView, shizukuOutputView;
     private TextView presetSummaryView;
     private TextView scanPlanView;
     private EditText targetsInput, snisInput, totalInput, batchInput, threadsInput, timeoutInput;
     private EditText communitySampleInput, akamaiSampleInput, cloudfrontSampleInput, fastlySampleInput, cloudflareSampleInput, otherCdnSampleInput;
     private EditText portsInput, pathInput, maxLatencyInput, resultLimitInput, cdnFilterInput, certFilterInput, sniFilterInput, minQualityInput;
-    private CheckBox multiSni, filterWorking, filterSni, bestPerIp, hideNoisyLogs, requireHttp, requireKnownCdn, requireTls13, batteryFriendlyUi;
+    private EditText shizukuKeyInput, shizukuValueInput;
+    private CheckBox multiSni, filterWorking, filterTlsHttp, bestPerIp, hideNoisyLogs, requireHttp, requireKnownCdn, requireTls13, batteryFriendlyUi;
     private CheckBox stepTcp, stepTls, stepHttp, stepVerify;
-    private Spinner profileSpinner, workflowSpinner, sortSpinner, presetSpinner, exportSpinner, vaultModeSpinner, visualModeSpinner, tlsModeSpinner;
+    private Spinner profileSpinner, workflowSpinner, sortSpinner, presetSpinner, exportSpinner, tlsModeSpinner, cdnProviderSpinner;
     private Button startButton, stopButton, copyButton, copyCsvButton, exportButton, clearButton, applyPresetButton, appendPresetButton, helpButton;
-    private Button tabTargetButton, tabLiveButton, tabVaultButton;
+    private Button tabTargetButton, tabLiveButton, tabDiagnosticsButton;
     private int totalTargets;
     private int activeTab;
-    private float swipeStartX, swipeStartY;
+    private int visualizationMode;
+    private int densityMode;
+    private int resultOffset;
     private long scanStartedAt;
+    private final ArrayList<Button> visualizationButtons = new ArrayList<>();
+    private final ArrayList<Button> densityButtons = new ArrayList<>();
+    private final Shizuku.OnRequestPermissionResultListener shizukuPermissionListener = this::onShizukuPermissionResult;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         buildUi();
         loadDefaults();
         maybeShowOnboarding();
+        addShizukuListener();
+        refreshShizukuState();
         if (ACTION_QUICK_SCAN.equals(getIntent().getAction())) {
             ui.postDelayed(this::startScan, 450);
         }
+    }
+
+    @Override protected void onDestroy() {
+        removeShizukuListener();
+        super.onDestroy();
     }
 
     private void buildUi() {
@@ -109,25 +132,23 @@ public class MainActivity extends Activity {
         scroll.addView(root);
 
         root.addView(text("MaybeEdgeScanner", 27, Color.WHITE, true));
-        root.addView(text("Standalone edge, SNI, CIDR, TCP, TLS, HTTP and CDN scanner", 13, MUTED, false));
+        root.addView(text("Edge discovery workspace", 13, MUTED, false));
         status = pill("Ready");
         root.addView(status);
         networkBanner = pill(networkContextLine());
         root.addView(networkBanner);
-        homeDashboardView = panelText("Network dashboard\nPrivate IP: checking\nPublic IP: checking\nDNS: checking\nVPN/proxy: checking\nStatus: checking");
+        homeDashboardView = panelText("Network\nLAN: checking\nWAN: checking\nDNS: checking\nRoute: checking");
         root.addView(homeDashboardView);
-        root.addView(infoCard("Presets included", "Community-tested edges, provider CIDR corpora, and SNI hostnames are separate inputs. Provider sampling is taken from provider CIDR/range files, not from community-tested IPs."));
-        root.addView(infoCard("No preset override", "Preset buttons merge into one target corpus and one SNI corpus. Duplicate ranges are deduped before expansion, so overlapping files do not override each other or silently erase your custom input."));
-        root.addView(infoCard("Targets vs SNI", "Targets decide where sockets connect. SNI hosts decide what TLS/HTTP name is presented after connecting. They are intentionally separate: same target IP, many possible SNI/Host routes."));
-        helpButton = button("Guide & parameter help", Color.rgb(23, 46, 63), Color.WHITE);
+        root.addView(quietNote("Sources build the scan. Results show the filtered cards and export actions. Diagnostics keeps logs and support links out of the way."));
+        helpButton = button("Reference", Color.rgb(23, 46, 63), Color.WHITE);
         root.addView(helpButton);
         LinearLayout tabs = row();
-        tabTargetButton = button("Target Setup", Color.rgb(21, 45, 62), Color.WHITE);
-        tabLiveButton = button("Live Terminal", Color.rgb(21, 45, 62), Color.WHITE);
-        tabVaultButton = button("Edge Vault", Color.rgb(21, 45, 62), Color.WHITE);
+        tabTargetButton = button("1 Sources", Color.rgb(21, 45, 62), Color.WHITE);
+        tabLiveButton = button("2 Results", Color.rgb(21, 45, 62), Color.WHITE);
+        tabDiagnosticsButton = button("3 Diagnostics", Color.rgb(21, 45, 62), Color.WHITE);
         tabs.addView(tabTargetButton, weight());
         tabs.addView(tabLiveButton, weight());
-        tabs.addView(tabVaultButton, weight());
+        tabs.addView(tabDiagnosticsButton, weight());
         root.addView(tabs);
 
         LinearLayout quick = row();
@@ -142,7 +163,7 @@ public class MainActivity extends Activity {
 
         targetTab = column();
         root.addView(targetTab);
-        targetAnchor = section("Target Setup");
+        targetAnchor = section("Sources");
         targetTab.addView(targetAnchor);
         targetsInput = area("Targets: domains, IPv4, CIDR, ranges");
         snisInput = area("SNI hosts");
@@ -168,7 +189,7 @@ public class MainActivity extends Activity {
         scanPlanView = glassText("Scan plan will update as you edit targets, SNIs, ports, workflow, and total cap.");
         targetTab.addView(scanPlanView);
         targetTab.addView(section("Targets"));
-        targetTab.addView(infoCard("Custom ranges are welcome", "Paste IPs, CIDRs like 151.101.0.0/16, or ranges like 184.24.77.5-184.24.77.42. Preset cards are broad shortcuts; use the picker above for individual provider corpora."));
+        targetTab.addView(quietNote("Targets are where sockets connect. SNI hosts are the TLS/HTTP names tested against those targets."));
         targetTab.addView(targetsInput);
         targetChipPreview = chipPanel();
         targetTab.addView(targetChipPreview);
@@ -177,6 +198,7 @@ public class MainActivity extends Activity {
         sniChipPreview = chipPanel();
         targetTab.addView(sniChipPreview);
 
+        LinearLayout workflowPanel = column();
         LinearLayout row1 = row();
         profileSpinner = spinner(new String[]{"Quick TCP", "Standard TLS", "Deep HTTP + SNI", "Verify CDN edge"});
         workflowSpinner = spinner(new String[]{"Single selected profile", "Auto multi-step ladder", "Manual selected steps"});
@@ -184,12 +206,9 @@ public class MainActivity extends Activity {
         tlsModeSpinner = spinner(new String[]{"Android default", "Chrome-like ALPN", "Firefox-like ALPN", "HTTP/1.1 only", "Rotate per probe"});
         row1.addView(box("Profile", profileSpinner), weight());
         row1.addView(box("Workflow", workflowSpinner), weight());
-        targetTab.addView(row1);
-        LinearLayout row1b = row();
-        row1b.addView(box("Sort", sortSpinner), weight());
-        row1b.addView(box("TLS ClientHello", tlsModeSpinner), weight());
-        targetTab.addView(row1b);
-        targetTab.addView(infoCard("Multi-step scans", "Auto ladder runs TCP, then TLS, then HTTP/SNI, then CDN verification. Manual mode runs only the checked steps below."));
+        workflowPanel.addView(row1);
+        workflowPanel.addView(box("TLS ClientHello", tlsModeSpinner));
+        workflowPanel.addView(quietNote("Auto ladder runs TCP, TLS, HTTP/SNI, then CDN verification. Manual runs only checked stages."));
         LinearLayout stepRow1 = row();
         stepTcp = check("Step 1 TCP");
         stepTls = check("Step 2 TLS");
@@ -201,18 +220,20 @@ public class MainActivity extends Activity {
         stepVerify.setChecked(true);
         stepRow1.addView(stepTcp, weight());
         stepRow1.addView(stepTls, weight());
-        targetTab.addView(stepRow1);
+        workflowPanel.addView(stepRow1);
         LinearLayout stepRow2 = row();
         stepRow2.addView(stepHttp, weight());
         stepRow2.addView(stepVerify, weight());
-        targetTab.addView(stepRow2);
+        workflowPanel.addView(stepRow2);
+        targetTab.addView(collapsibleBox("Workflow and probe stages", workflowPanel, true));
 
-        targetTab.addView(infoCard("Performance modes", "Choose a comfort mode, then expand into the numbers below if you want exact control. These are presets, not caps."));
+        LinearLayout performancePanel = column();
+        performancePanel.addView(quietNote("Performance presets tune threads, batch, and timeout. Total cap still limits expanded endpoints."));
         LinearLayout modeRow = row();
         modeRow.addView(modeButton("Battery Saver", "16 / 2000 / 2500", 16, 2000, 2500), weight());
         modeRow.addView(modeButton("Balanced", "64 / 12000 / 3000", 64, 12000, 3000), weight());
         modeRow.addView(modeButton("Aggressive", "256 / 72000 / 5000", 256, 72000, 5000), weight());
-        targetTab.addView(modeRow);
+        performancePanel.addView(modeRow);
 
         LinearLayout row2 = row();
         totalInput = input("72000", true);
@@ -221,39 +242,46 @@ public class MainActivity extends Activity {
         timeoutInput = input("3000", true);
         row2.addView(box("Total cap", totalInput), weight());
         row2.addView(box("Batch", batchInput), weight());
-        targetTab.addView(row2);
+        performancePanel.addView(row2);
         LinearLayout row3 = row();
         row3.addView(box("Threads", threadsInput), weight());
         row3.addView(box("Timeout ms", timeoutInput), weight());
-        targetTab.addView(row3);
-        targetTab.addView(infoCard("Per-source sampling", "0 keeps the full source tokens. Any positive number samples expanded IPs from that source's whole CIDR/range space. Community tested IPs are normalized into /24 CIDRs; provider buckets sample provider-owned CIDRs."));
-        LinearLayout sourceRow1 = row();
+        performancePanel.addView(row3);
+        targetTab.addView(collapsibleBox("Performance and limits", performancePanel, true));
+
+        LinearLayout providerPanel = column();
+        providerPanel.addView(quietNote("Provider samples are source-specific. 0 keeps a source whole; positive values sample from that provider's CIDR/range space."));
         communitySampleInput = input("0", true);
         akamaiSampleInput = input("0", true);
         cloudfrontSampleInput = input("0", true);
-        sourceRow1.addView(box("Community /24s", communitySampleInput), weight());
-        sourceRow1.addView(box("Provider Akamai", akamaiSampleInput), weight());
-        sourceRow1.addView(box("Provider CloudFront", cloudfrontSampleInput), weight());
-        targetTab.addView(sourceRow1);
-        LinearLayout sourceRow2 = row();
         fastlySampleInput = input("0", true);
         cloudflareSampleInput = input("0", true);
         otherCdnSampleInput = input("0", true);
+        LinearLayout sourceRow1 = row();
+        sourceRow1.addView(box("Community /24s", communitySampleInput), weight());
+        sourceRow1.addView(box("Provider Akamai", akamaiSampleInput), weight());
+        providerPanel.addView(sourceRow1);
+        LinearLayout sourceRow2 = row();
+        sourceRow2.addView(box("Provider CloudFront", cloudfrontSampleInput), weight());
         sourceRow2.addView(box("Provider Fastly", fastlySampleInput), weight());
-        sourceRow2.addView(box("Provider Cloudflare", cloudflareSampleInput), weight());
-        sourceRow2.addView(box("Other CDNs", otherCdnSampleInput), weight());
-        targetTab.addView(sourceRow2);
+        providerPanel.addView(sourceRow2);
+        LinearLayout sourceRow3 = row();
+        sourceRow3.addView(box("Provider Cloudflare", cloudflareSampleInput), weight());
+        sourceRow3.addView(box("Other CDNs", otherCdnSampleInput), weight());
+        providerPanel.addView(sourceRow3);
+        targetTab.addView(collapsibleBox("Provider samples", providerPanel, false));
 
+        LinearLayout requestPanel = column();
         LinearLayout row4 = row();
         portsInput = input("443", false);
         pathInput = input("/", false);
         row4.addView(box("Ports", portsInput), weight());
         row4.addView(box("HTTP path", pathInput), weight());
-        targetTab.addView(row4);
+        requestPanel.addView(row4);
 
         multiSni = check("All SNI hosts");
         filterWorking = check("Working only");
-        filterSni = check("TLS/HTTP only");
+        filterTlsHttp = check("TLS/HTTP only");
         bestPerIp = check("Best per IP");
         hideNoisyLogs = check("Quiet logs");
         requireHttp = check("HTTP only");
@@ -264,47 +292,16 @@ public class MainActivity extends Activity {
         bestPerIp.setChecked(true);
         LinearLayout checks1 = row();
         checks1.addView(multiSni, weight());
-        checks1.addView(filterWorking, weight());
-        targetTab.addView(checks1);
+        checks1.addView(hideNoisyLogs, weight());
+        requestPanel.addView(checks1);
         LinearLayout checks2 = row();
-        checks2.addView(filterSni, weight());
-        checks2.addView(bestPerIp, weight());
-        targetTab.addView(checks2);
-        LinearLayout checks3 = row();
-        checks3.addView(requireHttp, weight());
-        checks3.addView(requireKnownCdn, weight());
-        targetTab.addView(checks3);
-        LinearLayout checks4 = row();
-        checks4.addView(requireTls13, weight());
-        checks4.addView(hideNoisyLogs, weight());
-        targetTab.addView(checks4);
-        LinearLayout checks5 = row();
-        checks5.addView(batteryFriendlyUi, weight());
-        targetTab.addView(checks5);
-
-        LinearLayout row5 = row();
-        maxLatencyInput = input("", true); maxLatencyInput.setHint("Max latency");
-        resultLimitInput = input("250", true);
-        row5.addView(box("Max latency ms", maxLatencyInput), weight());
-        row5.addView(box("Result limit", resultLimitInput), weight());
-        targetTab.addView(row5);
-        LinearLayout row6 = row();
-        cdnFilterInput = input("", false); cdnFilterInput.setHint("akamai, fastly...");
-        certFilterInput = input("", false); certFilterInput.setHint("CN/O/cert contains");
-        row6.addView(box("CDN filter", cdnFilterInput), weight());
-        row6.addView(box("Cert filter", certFilterInput), weight());
-        targetTab.addView(row6);
-        LinearLayout row7 = row();
-        sniFilterInput = input("", false); sniFilterInput.setHint("SNI contains");
-        minQualityInput = input("", true); minQualityInput.setHint("Min quality");
-        row7.addView(box("SNI filter", sniFilterInput), weight());
-        row7.addView(box("Min quality", minQualityInput), weight());
-        targetTab.addView(row7);
-        targetTab.addView(supportFooter());
+        checks2.addView(batteryFriendlyUi, weight());
+        requestPanel.addView(checks2);
+        targetTab.addView(collapsibleBox("Request and display behavior", requestPanel, false));
 
         liveTab = column();
         root.addView(liveTab);
-        liveAnchor = section("Live Terminal");
+        liveAnchor = section("Results");
         liveTab.addView(liveAnchor);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100);
@@ -322,72 +319,128 @@ public class MainActivity extends Activity {
         setOuterMargin(analyticsPanel, 0, dp(8), 0, dp(8));
         liveTab.addView(analyticsPanel);
 
+        LinearLayout filterPanel = column();
+        filterPanel.addView(quietNote("These controls only change visible cards and exports; they never change the scan queue."));
+        LinearLayout resultFilterToggles1 = row();
+        resultFilterToggles1.addView(filterWorking, weight());
+        resultFilterToggles1.addView(filterTlsHttp, weight());
+        filterPanel.addView(resultFilterToggles1);
+        LinearLayout resultFilterToggles2 = row();
+        resultFilterToggles2.addView(requireHttp, weight());
+        resultFilterToggles2.addView(requireKnownCdn, weight());
+        filterPanel.addView(resultFilterToggles2);
+        LinearLayout resultFilterToggles3 = row();
+        resultFilterToggles3.addView(requireTls13, weight());
+        resultFilterToggles3.addView(bestPerIp, weight());
+        filterPanel.addView(resultFilterToggles3);
+        cdnProviderSpinner = spinner(new String[]{"Any provider", "Known CDN", "Akamai", "Cloudflare", "CloudFront/AWS", "Fastly", "GitHub", "Google", "Azure", "Bunny", "Unknown"});
+        LinearLayout providerFilterRow = row();
+        providerFilterRow.addView(box("Sort cards", sortSpinner), weight());
+        providerFilterRow.addView(box("Provider preset", cdnProviderSpinner), weight());
+        filterPanel.addView(providerFilterRow);
+        LinearLayout row5 = row();
+        maxLatencyInput = input("", true); maxLatencyInput.setHint("Any");
+        resultLimitInput = input("250", true);
+        row5.addView(box("Max latency ms", maxLatencyInput), weight());
+        row5.addView(box("Visible cards", resultLimitInput), weight());
+        filterPanel.addView(row5);
+        LinearLayout row6 = row();
+        cdnFilterInput = input("", false); cdnFilterInput.setHint("Any CDN");
+        certFilterInput = input("", false); certFilterInput.setHint("Certificate contains");
+        row6.addView(box("CDN contains", cdnFilterInput), weight());
+        row6.addView(box("Cert contains", certFilterInput), weight());
+        filterPanel.addView(row6);
+        LinearLayout row7 = row();
+        sniFilterInput = input("", false); sniFilterInput.setHint("Any SNI");
+        minQualityInput = input("", true); minQualityInput.setHint("Any");
+        row7.addView(box("SNI contains", sniFilterInput), weight());
+        row7.addView(box("Min score", minQualityInput), weight());
+        filterPanel.addView(row7);
+        Button clearFiltersButton = button("Clear filters", Color.rgb(24, 45, 58), Color.WHITE);
+        clearFiltersButton.setOnClickListener(v -> clearResultFilters());
+        filterPanel.addView(clearFiltersButton);
+        liveTab.addView(collapsibleBox("Filter, sort, and page cards", filterPanel, true));
+
+        LinearLayout exportPanel = column();
+        exportPanel.addView(quietNote("Copy and save use the current filtered result set. Cards stay visible after export."));
         LinearLayout buttons = row();
-        copyButton = button("Copy filtered", Color.rgb(34, 51, 66), Color.WHITE);
-        copyCsvButton = button("Copy filtered CSV", Color.rgb(34, 51, 66), Color.WHITE);
-        exportButton = button("Export JSON", Color.rgb(34, 51, 66), Color.WHITE);
+        copyButton = button("Copy format", Color.rgb(34, 51, 66), Color.WHITE);
+        copyCsvButton = button("Copy CSV", Color.rgb(34, 51, 66), Color.WHITE);
+        exportButton = button("Save JSON", Color.rgb(34, 51, 66), Color.WHITE);
         buttons.addView(copyButton, weight());
         buttons.addView(copyCsvButton, weight());
         buttons.addView(exportButton, weight());
-        liveTab.addView(buttons);
+        exportPanel.addView(buttons);
         LinearLayout exportRow = row();
         exportSpinner = spinner(new String[]{"Line-separated IPs", "Comma-separated IPs", "IP SNI pairs", "CSV rows", "JSON"});
         exportRow.addView(box("Clipboard format", exportSpinner), weight());
-        liveTab.addView(exportRow);
-        copyFallbackView = panelText("Manual copy fallback appears here after copying filtered results.");
-        copyFallbackView.setTextIsSelectable(true);
-        copyFallbackView.setOnClickListener(v -> showManualCopyDialog("Manual copy fallback", copyFallbackView.getText().toString()));
-        liveTab.addView(copyFallbackView);
-        liveTab.addView(supportFooter());
-
-        vaultTab = column();
-        root.addView(vaultTab);
-        vaultAnchor = section("Edge Vault");
-        vaultTab.addView(vaultAnchor);
-        vaultModeSpinner = spinner(new String[]{"List cards", "Heatmap overview"});
-        vaultTab.addView(box("Vault view", vaultModeSpinner));
-        visualModeSpinner = spinner(new String[]{"Glass comfort", "High contrast", "Compact analyst"});
-        vaultTab.addView(box("Visual mode", visualModeSpinner));
+        exportPanel.addView(exportRow);
+        liveTab.addView(collapsibleBox("Copy and export", exportPanel, false));
+        liveTab.addView(segmentedChoice("Visualization", new String[]{"Cards", "Heatmap"}, visualizationButtons, visualizationMode, index -> {
+            visualizationMode = index;
+            renderResults();
+        }));
+        liveTab.addView(segmentedChoice("Density", new String[]{"Comfort", "Contrast", "Compact"}, densityButtons, densityMode, index -> {
+            densityMode = index;
+            renderResults();
+            renderTokenPreviews();
+        }));
         stableHistoryPanel = column();
         stableHistoryPanel.setBackground(glassBg(Color.rgb(9, 23, 34), Color.argb(90, 255, 255, 255)));
         stableHistoryPanel.setPadding(dp(12), dp(10), dp(12), dp(10));
         setOuterMargin(stableHistoryPanel, 0, dp(8), 0, dp(8));
-        vaultTab.addView(stableHistoryPanel);
+        liveTab.addView(stableHistoryPanel);
         resultList = column();
         resultList.setLayoutTransition(null);
-        vaultTab.addView(resultList);
-        vaultTab.addView(section("Logs"));
+        liveTab.addView(resultList);
+
+        diagnosticsTab = column();
+        root.addView(diagnosticsTab);
+        diagnosticsAnchor = section("Diagnostics");
+        diagnosticsTab.addView(diagnosticsAnchor);
+        diagnosticsTab.addView(quietNote("Logs and support links live here so they do not bury scan setup or result cards."));
+        diagnosticsTab.addView(section("Logs"));
         logView = text("", 12, MUTED, false);
         logView.setTypeface(Typeface.MONOSPACE);
-        vaultTab.addView(logView);
-        vaultTab.addView(supportFooter());
+        diagnosticsTab.addView(logView);
+        diagnosticsTab.addView(collapsibleBox("Radio and network assist", diagnosticsRadioPanel(), false));
+        diagnosticsTab.addView(collapsibleBox("Support and project links", diagnosticsSupportPanel(), false));
 
         startButton.setOnClickListener(v -> startScan());
-        stopButton.setOnClickListener(v -> stop.set(true));
+        stopButton.setOnClickListener(v -> requestStop());
         clearButton.setOnClickListener(v -> clearResults());
         helpButton.setOnClickListener(v -> showGuide());
         tabTargetButton.setOnClickListener(v -> selectTab(0));
         tabLiveButton.setOnClickListener(v -> selectTab(1));
-        tabVaultButton.setOnClickListener(v -> selectTab(2));
+        tabDiagnosticsButton.setOnClickListener(v -> selectTab(2));
         applyPresetButton.setOnClickListener(v -> applyPreset(false));
         appendPresetButton.setOnClickListener(v -> applyPreset(true));
         copyButton.setOnClickListener(v -> copySelectedFormat());
-        copyCsvButton.setOnClickListener(v -> copyWorking(true));
+        copyCsvButton.setOnClickListener(v -> copyVisibleCsv());
         exportButton.setOnClickListener(v -> exportJson());
-        View.OnClickListener refresh = v -> renderResults();
+        View.OnClickListener refresh = v -> renderResultsFromFirstPage();
         filterWorking.setOnClickListener(refresh);
-        filterSni.setOnClickListener(refresh);
+        filterTlsHttp.setOnClickListener(refresh);
         bestPerIp.setOnClickListener(refresh);
         requireHttp.setOnClickListener(refresh);
         requireKnownCdn.setOnClickListener(refresh);
         requireTls13.setOnClickListener(refresh);
+        View.OnClickListener planClick = v -> updateScanPlanPreview();
+        stepTcp.setOnClickListener(planClick);
+        stepTls.setOnClickListener(planClick);
+        stepHttp.setOnClickListener(planClick);
+        stepVerify.setOnClickListener(planClick);
         batteryFriendlyUi.setOnClickListener(v -> applyBatteryFriendlyUi());
         multiSni.setOnClickListener(v -> {
             renderResults();
             updateScanPlanPreview();
         });
         sortSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) { renderResults(); }
+            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) { renderResultsFromFirstPage(); }
+            @Override public void onNothingSelected(AdapterView<?> p) {}
+        });
+        cdnProviderSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) { renderResultsFromFirstPage(); }
             @Override public void onNothingSelected(AdapterView<?> p) {}
         });
         AdapterView.OnItemSelectedListener planRefresh = new AdapterView.OnItemSelectedListener() {
@@ -397,41 +450,36 @@ public class MainActivity extends Activity {
         profileSpinner.setOnItemSelectedListener(planRefresh);
         workflowSpinner.setOnItemSelectedListener(planRefresh);
         tlsModeSpinner.setOnItemSelectedListener(planRefresh);
-        vaultModeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) { renderResults(); }
-            @Override public void onNothingSelected(AdapterView<?> p) {}
-        });
-        visualModeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
-                renderResults();
-                renderTokenPreviews();
-            }
+        presetSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) { updatePresetPreview(); }
             @Override public void onNothingSelected(AdapterView<?> p) {}
         });
         targetsInput.addTextChangedListener(simpleWatcher(this::renderTokenPreviews));
         snisInput.addTextChangedListener(simpleWatcher(this::renderTokenPreviews));
-        totalInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
+        totalInput.addTextChangedListener(simpleWatcher(this::renderTokenPreviews));
+        batchInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
+        threadsInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
+        timeoutInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
         portsInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
-        scroll.setOnTouchListener((v, e) -> {
-            if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) {
-                swipeStartX = e.getX();
-                swipeStartY = e.getY();
-            } else if (e.getAction() == android.view.MotionEvent.ACTION_UP) {
-                float dx = e.getX() - swipeStartX;
-                float dy = e.getY() - swipeStartY;
-                if (Math.abs(dx) > dp(96) && Math.abs(dx) > Math.abs(dy) * 1.4f) {
-                    selectTab(activeTab + (dx < 0 ? 1 : -1));
-                    return true;
-                }
-            }
-            return false;
-        });
+        pathInput.addTextChangedListener(simpleWatcher(this::updateScanPlanPreview));
+        communitySampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
+        akamaiSampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
+        cloudfrontSampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
+        fastlySampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
+        cloudflareSampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
+        otherCdnSampleInput.addTextChangedListener(simpleWatcher(this::updatePresetPreview));
+        maxLatencyInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
+        resultLimitInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
+        cdnFilterInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
+        certFilterInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
+        sniFilterInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
+        minQualityInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
         setContentView(scroll);
         applyAccessibilityLabels();
         updateHomeDashboard();
         updateAnalytics(Collections.emptyList());
         renderTokenPreviews();
-        updateScanPlanPreview();
+        updatePresetPreview();
         selectTab(0);
     }
 
@@ -450,7 +498,7 @@ public class MainActivity extends Activity {
             else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) transport = "VPN";
             else transport = "Network";
             String metered = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ? "unmetered" : "metered";
-            String internet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) ? "validated" : "checking";
+            String internet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) ? "internet ok" : "internet checking";
             return "Connected via " + transport + " | " + metered + " | " + internet;
         } catch (Exception ignored) {
             return "Network context unavailable";
@@ -471,9 +519,9 @@ public class MainActivity extends Activity {
     private String homeDashboardText(String publicIp) {
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            if (cm == null) return "Network dashboard\nNetwork context unavailable";
+            if (cm == null) return "Network\nContext unavailable";
             Network network = cm.getActiveNetwork();
-            if (network == null) return "Network dashboard\nOffline";
+            if (network == null) return "Network\nOffline";
             NetworkCapabilities caps = cm.getNetworkCapabilities(network);
             LinkProperties lp = cm.getLinkProperties(network);
             String transport = transportName(caps);
@@ -483,45 +531,70 @@ public class MainActivity extends Activity {
             String dnsStatus = dnsStatus(caps, lp);
             String proxyVpn = proxyVpnStatus(cm, caps);
             String providerStatus = providerStatus(caps);
-            return "Network dashboard\n" +
-                    "Private IP: " + privateIp + "\n" +
-                    "Public IP: " + publicIp + "\n" +
-                    "DNS provider: " + dnsProvider + "\n" +
-                    "DNS servers: " + dns + "\n" +
-                    "VPN/proxy: " + proxyVpn + "\n" +
-                    "DNS/provider status: " + dnsStatus + " | " + transport + " | " + providerStatus;
+            return "Network\n" +
+                    "LAN: " + privateIp + "\n" +
+                    "WAN: " + publicIp + "\n" +
+                    "DNS: " + dnsProvider + " (" + dns + ")\n" +
+                    "Route: " + transport + " | " + proxyVpn + "\n" +
+                    "State: " + dnsStatus + " | " + providerStatus;
         } catch (Exception e) {
-            return "Network dashboard\nNetwork details unavailable";
+            return "Network\nDetails unavailable";
         }
     }
 
     private String fetchPublicIp() {
-        HttpURLConnection conn = null;
-        try {
-            conn = (HttpURLConnection) new URL("https://api.ipify.org").openConnection();
-            conn.setConnectTimeout(2500);
-            conn.setReadTimeout(2500);
-            conn.setRequestProperty("User-Agent", "MaybeEdgeScanner/1.1");
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.US_ASCII))) {
-                String line = br.readLine();
-                return line == null || line.trim().isEmpty() ? "unavailable" : line.trim();
+        String[] endpoints = {
+                "https://api.ipify.org",
+                "https://ifconfig.me/ip",
+                "https://icanhazip.com"
+        };
+        for (String endpoint : endpoints) {
+            HttpURLConnection conn = null;
+            try {
+                conn = (HttpURLConnection) new URL(endpoint).openConnection();
+                conn.setConnectTimeout(2500);
+                conn.setReadTimeout(2500);
+                conn.setRequestProperty("User-Agent", "MaybeEdgeScanner/1.1");
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.US_ASCII))) {
+                    String line = br.readLine();
+                    if (line != null && !line.trim().isEmpty()) return line.trim();
+                }
+            } catch (Exception ignored) {
+            } finally {
+                if (conn != null) conn.disconnect();
             }
-        } catch (Exception e) {
-            return "unavailable";
-        } finally {
-            if (conn != null) conn.disconnect();
         }
+        return "unavailable";
     }
 
     private String privateIps(LinkProperties lp) {
-        if (lp == null) return "unavailable";
         ArrayList<String> ips = new ArrayList<>();
-        for (LinkAddress address : lp.getLinkAddresses()) {
-            InetAddress inet = address.getAddress();
-            if (inet == null || inet.isLoopbackAddress() || inet.isLinkLocalAddress()) continue;
-            if (inet.isSiteLocalAddress() || inet instanceof Inet6Address) ips.add(inet.getHostAddress());
+        if (lp != null) {
+            for (LinkAddress address : lp.getLinkAddresses()) addPrivateAddress(ips, address == null ? null : address.getAddress());
+        }
+        if (ips.isEmpty()) {
+            try {
+                Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+                while (interfaces != null && interfaces.hasMoreElements()) {
+                    NetworkInterface ni = interfaces.nextElement();
+                    if (ni == null || !ni.isUp() || ni.isLoopback() || ni.isVirtual()) continue;
+                    Enumeration<InetAddress> addresses = ni.getInetAddresses();
+                    while (addresses.hasMoreElements()) addPrivateAddress(ips, addresses.nextElement());
+                }
+            } catch (Exception ignored) {}
         }
         return ips.isEmpty() ? "unavailable" : joinComma(ips);
+    }
+
+    private void addPrivateAddress(ArrayList<String> ips, InetAddress inet) {
+        if (inet == null || inet.isLoopbackAddress() || inet.isLinkLocalAddress() || inet.isMulticastAddress()) return;
+        String host = inet.getHostAddress();
+        if (host == null || host.trim().isEmpty()) return;
+        int zone = host.indexOf('%');
+        if (zone >= 0) host = host.substring(0, zone);
+        boolean privateV4 = inet instanceof Inet4Address && (inet.isSiteLocalAddress() || host.startsWith("100.64.") || host.startsWith("169.254."));
+        boolean usableV6 = inet instanceof Inet6Address && !host.equals("::1");
+        if ((privateV4 || usableV6) && !ips.contains(host)) ips.add(host);
     }
 
     private String dnsServers(LinkProperties lp) {
@@ -538,12 +611,12 @@ public class MainActivity extends Activity {
         if (d.contains("9.9.9.9") || d.contains("149.112.112.112") || d.contains("2620:fe")) return "Quad9";
         if (d.contains("208.67.222.222") || d.contains("208.67.220.220")) return "Cisco OpenDNS";
         if (d.contains("94.140.14.") || d.contains("2a10:50c0")) return "AdGuard";
-        return d.equals("unavailable") ? "unavailable" : "network provided";
+        return d == null || d.equals("unavailable") ? "unavailable" : "network provided";
     }
 
     private String dnsStatus(NetworkCapabilities caps, LinkProperties lp) {
         ArrayList<String> status = new ArrayList<>();
-        status.add(caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) ? "validated" : "not validated");
+        status.add(caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) ? "internet ok" : "internet unverified");
         if (Build.VERSION.SDK_INT >= 28 && lp != null) {
             status.add(lp.isPrivateDnsActive() ? "Private DNS active" : "Private DNS off");
             String name = lp.getPrivateDnsServerName();
@@ -600,6 +673,7 @@ public class MainActivity extends Activity {
                 batteryFriendlyUi.setChecked(true);
                 applyBatteryFriendlyUi();
             }
+            updateScanPlanPreview();
             toast(title + " values applied. You can still edit them.");
         });
         b.setContentDescription(title + " performance preset: threads, batch, timeout " + subtitle);
@@ -610,7 +684,10 @@ public class MainActivity extends Activity {
         boolean on = batteryFriendlyUi != null && batteryFriendlyUi.isChecked();
         if (hideNoisyLogs != null) hideNoisyLogs.setChecked(on || hideNoisyLogs.isChecked());
         if (resultLimitInput != null && on) resultLimitInput.setText("75");
-        if (visualModeSpinner != null && on) visualModeSpinner.setSelection(2);
+        if (on) {
+            densityMode = 2;
+            refreshSegmentButtons(densityButtons, densityMode);
+        }
         if (analyticsPanel != null) analyticsPanel.setVisibility(on ? View.GONE : View.VISIBLE);
         if (logView != null) logView.setVisibility(on ? View.GONE : View.VISIBLE);
         renderResults();
@@ -640,27 +717,38 @@ public class MainActivity extends Activity {
 
     private void renderTokenPreviews() {
         if (targetChipPreview == null || sniChipPreview == null || targetsInput == null || snisInput == null) return;
-        renderChips(targetChipPreview, "Validated targets", lines(targetsInput.getText().toString()), true);
-        renderChips(sniChipPreview, "Validated SNI hosts", lines(snisInput.getText().toString()), false);
+        List<String> targetTokens = lines(targetsInput.getText().toString());
+        int targetCap = Math.max(1, intValue(totalInput, 72000));
+        int estimatedTargets = estimateExpandedTargetCount(targetTokens, 200000);
+        List<String> expandedTargets = expandTargets(targetTokens, targetCap);
+        renderChips(targetChipPreview, "Target queue (" + targetTokens.size() + " tokens -> " + Math.min(estimatedTargets, targetCap) + " endpoints)", expandedTargets, true);
+        renderChips(sniChipPreview, "SNI routes", lines(snisInput.getText().toString()), false);
         updateScanPlanPreview();
     }
 
     private void updateScanPlanPreview() {
         if (scanPlanView == null || targetsInput == null || snisInput == null || portsInput == null || totalInput == null) return;
         List<String> rawTargets = lines(targetsInput.getText().toString());
-        List<String> expanded = expandTargets(rawTargets);
         int cap = Math.max(1, intValue(totalInput, 72000));
-        int cappedTargets = Math.min(expanded.size(), cap);
+        int estimatedTargets = estimateExpandedTargetCount(rawTargets, 200000);
+        int cappedTargets = Math.min(estimatedTargets, cap);
         int sniCount = Math.max(1, lines(snisInput.getText().toString()).size());
         List<Integer> ports = parsePorts(portsInput.getText().toString());
         List<Integer> profiles = selectedWorkflowProfiles();
         boolean allSni = multiSni != null && multiSni.isChecked();
         int units = estimateAttemptUnits(cappedTargets, sniCount, ports.size(), profiles, allSni);
+        int batch = Math.max(1, intValue(batchInput, 12000));
+        int threads = Math.max(1, intValue(threadsInput, 64));
+        int timeout = Math.max(1, intValue(timeoutInput, 3000));
+        String path = pathInput == null ? "/" : pathInput.getText().toString().trim();
+        if (path.isEmpty()) path = "/";
+        if (!path.startsWith("/")) path = "/" + path;
         scanPlanView.setText("Scan plan\n" +
-                rawTargets.size() + " target tokens -> " + expanded.size() + " expanded endpoints -> " + cappedTargets + " after Total cap " + cap + "\n" +
+                rawTargets.size() + " target tokens -> " + estimatedTargets + " estimated endpoints -> " + cappedTargets + " after Total cap " + cap + "\n" +
                 sniCount + " SNI host" + (sniCount == 1 ? "" : "s") + " kept separate for TLS/Host routing; ports " + ports + "\n" +
+                "Runtime: batch " + batch + ", threads " + threads + ", timeout " + timeout + "ms, HTTP path " + path + "\n" +
                 "TLS ClientHello mode: " + (tlsModeSpinner == null ? "Android default" : tlsModeSpinner.getSelectedItem()) + "\n" +
-                workflowLabels(profiles) + " -> about " + units + " probe units. Preset overlaps are deduped, not overridden.");
+                workflowLabels(profiles) + " -> " + (profiles.isEmpty() ? "select at least one manual step." : "about " + units + " probe units. Preset overlaps are deduped, not overridden."));
     }
 
     private int estimateAttemptUnits(int targets, int snis, int ports, List<Integer> profiles, boolean allSni) {
@@ -668,10 +756,10 @@ public class MainActivity extends Activity {
         int portCount = Math.max(1, ports);
         int routeCount = Math.max(1, snis);
         for (int profile : profiles) {
-            int sniMultiplier = (profile >= 2 || allSni) ? routeCount : 1;
+            int sniMultiplier = profile == 0 ? 1 : ((profile >= 2 || allSni) ? routeCount : 1);
             units += (long) Math.max(0, targets) * portCount * Math.max(1, sniMultiplier);
         }
-        if (units <= 0) return 1;
+        if (units <= 0) return 0;
         return units > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) units;
     }
 
@@ -679,18 +767,26 @@ public class MainActivity extends Activity {
         panel.removeAllViews();
         int valid = 0;
         for (String value : values) if (targets ? validTargetToken(value) : validDomainToken(value)) valid++;
-        panel.addView(text(title + ": " + valid + "/" + values.size() + " valid", 11, MUTED, true));
-        LinearLayout row = row();
-        row.setGravity(Gravity.START);
-        int shown = Math.min(values.size(), 12);
+        panel.addView(text(title + ": " + valid + "/" + values.size() + " ready", 11, MUTED, true));
+        int shown = Math.min(values.size(), 8);
+        LinearLayout row = null;
         for (int i = 0; i < shown; i++) {
+            if (i % 2 == 0) {
+                row = row();
+                row.setGravity(Gravity.START);
+                panel.addView(row);
+            }
             String token = values.get(i);
             boolean ok = targets ? validTargetToken(token) : validDomainToken(token);
             row.addView(chip(token, ok), smallChipLp());
         }
+        if (row == null) {
+            row = row();
+            row.setGravity(Gravity.START);
+            panel.addView(row);
+        }
         if (values.size() > shown) row.addView(chip("+" + (values.size() - shown) + " more", true), smallChipLp());
         if (values.isEmpty()) row.addView(chip(targets ? "Paste IPs, CIDRs, ranges, domains" : "Paste hostnames for TLS SNI", true), smallChipLp());
-        panel.addView(row);
     }
 
     private TextView chip(String label, boolean ok) {
@@ -714,7 +810,7 @@ public class MainActivity extends Activity {
         String v = value.trim();
         if (v.contains("-")) {
             String[] p = v.split("-", 2);
-            return p.length == 2 && isIp(p[0]) && isIp(p[1]);
+            return p.length == 2 && isIpv4(p[0]) && isIpv4(p[1]);
         }
         if (v.contains("/")) {
             String[] p = v.split("/", 2);
@@ -739,10 +835,10 @@ public class MainActivity extends Activity {
         activeTab = Math.max(0, Math.min(2, tab));
         styleTab(tabTargetButton, activeTab == 0);
         styleTab(tabLiveButton, activeTab == 1);
-        styleTab(tabVaultButton, activeTab == 2);
+        styleTab(tabDiagnosticsButton, activeTab == 2);
         if (targetTab != null) targetTab.setVisibility(activeTab == 0 ? View.VISIBLE : View.GONE);
         if (liveTab != null) liveTab.setVisibility(activeTab == 1 ? View.VISIBLE : View.GONE);
-        if (vaultTab != null) vaultTab.setVisibility(activeTab == 2 ? View.VISIBLE : View.GONE);
+        if (diagnosticsTab != null) diagnosticsTab.setVisibility(activeTab == 2 ? View.VISIBLE : View.GONE);
         if (mainScroll != null) mainScroll.post(() -> mainScroll.smoothScrollTo(0, 0));
     }
 
@@ -755,13 +851,13 @@ public class MainActivity extends Activity {
 
     private void maybeShowOnboarding() {
         SharedPreferences prefs = getSharedPreferences("maybeedgescanner", MODE_PRIVATE);
-        if (prefs.getBoolean("onboarded_v2", false)) return;
-        prefs.edit().putBoolean("onboarded_v2", true).apply();
+        if (prefs.getBoolean("onboarded_v3", false)) return;
+        prefs.edit().putBoolean("onboarded_v3", true).apply();
         ui.postDelayed(() -> new AlertDialog.Builder(this)
                 .setTitle("Welcome to MaybeEdgeScanner")
                 .setMessage("1. Pick target corpora: Akamai, CloudFront, Fastly, or all bundled presets.\n\n" +
                         "2. Pick SNI hosts: SNI is the hostname used during TLS. Presets include useful defaults, and your custom hosts are merged in.\n\n" +
-                        "3. Scan and filter: choose a single profile, Auto multi-step ladder, or Manual selected steps. Live Terminal shows progress; Edge Vault lets you sort by score, filter by SNI/cert/CDN/latency, and copy only visible rows.")
+                        "3. Scan and filter: choose a single profile, Auto multi-step ladder, or Manual selected steps. Results show progress, cards, provider filters, sorting, visual density, and export. Diagnostics keeps logs and support out of the way.")
                 .setPositiveButton("Start setup", (d, which) -> scrollTo(targetAnchor))
                 .setNegativeButton("Guide", (d, which) -> showGuide())
                 .show(), 550);
@@ -770,12 +866,11 @@ public class MainActivity extends Activity {
     private void applyAccessibilityLabels() {
         targetsInput.setContentDescription("Targets input. Add domains, IP addresses, or CIDR ranges.");
         snisInput.setContentDescription("SNI hosts input. Add one or more TLS hostnames.");
-        startButton.setContentDescription("Start scan with the selected targets, SNI hosts, profile, filters, and performance values.");
+        startButton.setContentDescription("Start scan with the selected targets, SNI hosts, workflow, and performance values.");
         stopButton.setContentDescription("Stop the active scan.");
         copyButton.setContentDescription("Copy filtered results using the selected clipboard format.");
         progress.setContentDescription("Scan progress");
         workflowSpinner.setContentDescription("Scan workflow. Choose single profile, automatic multi-step ladder, or manual selected steps.");
-        visualModeSpinner.setContentDescription("Visual mode. Glass comfort is spacious, High contrast increases readability, Compact analyst shows denser result cards.");
     }
 
     private void showGuide() {
@@ -791,13 +886,13 @@ public class MainActivity extends Activity {
                         "Workflows\n" +
                         "Single runs one selected profile. Auto multi-step ladder runs TCP, then TLS, then HTTP/SNI, then CDN verification. Manual selected steps runs only the checked stages, useful when you want a focused pass without changing presets.\n\n" +
                         "Visual modes\n" +
-                        "Glass comfort is the default card layout. High contrast avoids color-only status cues and increases card opacity. Compact analyst reduces spacing so more edges fit on screen.\n\n" +
+                        "Comfort is the default card layout. Contrast avoids color-only status cues and increases card opacity. Compact reduces spacing so more edges fit on screen.\n\n" +
                         "Performance parameters\n" +
                         "Total cap limits expanded CIDRs. Batch controls how many targets run per wave. Threads controls parallel sockets. Timeout ms controls how long each connect/TLS/HTTP attempt can wait.\n\n" +
                         "Filtering and sorting\n" +
-                        "Use Working only, TLS/HTTP only, HTTP only, Known CDN only, TLS 1.3 only, SNI filter, CDN filter, certificate filter, max latency, and min score. Sort by Score to surface the strongest candidates.\n\n" +
+                        "Results owns all browsing controls: Working only, TLS/HTTP only, HTTP only, Known CDN only, TLS 1.3 only, provider preset, SNI filter, CDN text filter, certificate filter, max latency, visible card limit, and min score. Sort by Score to surface the strongest candidates.\n\n" +
                         "Copy and export\n" +
-                        "Copy filtered uses exactly the rows currently visible after filters and sort. Choose line-separated IPs, comma-separated IPs, IP SNI pairs, CSV, or JSON.")
+                        "Copy filtered uses exactly the rows currently visible after filters and sort. Choose line-separated IPs, comma-separated IPs, IP SNI pairs, CSV, or JSON. Copy never replaces the card surface; it only reports status.")
                 .setPositiveButton("Got it", null)
                 .show();
     }
@@ -828,8 +923,20 @@ public class MainActivity extends Activity {
         String summary = preset.name + ": " + preset.targets.size() + " target tokens, " + preset.snis.size() +
                 " SNI | " + preset.detail + " | Sampling applies when you press Replace/Append; Total cap applies after CIDR expansion.";
         presetSummaryView.setText(summary);
+        renderTokenPreviews();
+        toast((append ? "Appended " : "Loaded ") + preset.name + ": " + preset.targets.size() + " target tokens, " + preset.snis.size() + " SNI");
+    }
+
+    private void updatePresetPreview() {
+        if (presetSummaryView == null || presetSpinner == null || communitySampleInput == null) return;
+        Preset preset = loadSelectedPreset();
+        int expandedPreview = estimateExpandedTargetCount(preset.targets, 200000);
+        presetSummaryView.setText("Selected preset preview\n" +
+                preset.name + ": " + preset.targets.size() + " target tokens -> " + expandedPreview + " endpoint preview, " +
+                preset.snis.size() + " SNI routes\n" +
+                trim(preset.detail, 180) + "\n" +
+                "Replace loads only this preset. Append merges it with current Sources. Total cap is applied after expansion.");
         updateScanPlanPreview();
-        toast((append ? "Appended " : "Loaded ") + summary);
     }
 
     private Preset loadSelectedPreset() {
@@ -884,8 +991,9 @@ public class MainActivity extends Activity {
             return out;
         }
         if (list.isEmpty()) return out;
-        for (int i = 0; i < count; i++) {
-            String token = list.get((int) Math.floor(i * (list.size() / (double) count)));
+        int sampleCount = Math.min(count, list.size());
+        for (int i = 0; i < sampleCount; i++) {
+            String token = list.get((int) Math.floor(i * (list.size() / (double) sampleCount)));
             out.add(sampleOneExpandedTarget(token, i));
         }
         return out;
@@ -959,7 +1067,18 @@ public class MainActivity extends Activity {
     }
 
     private void startScan() {
-        if (executor != null && !executor.isShutdown()) return;
+        if (executor != null && !executor.isShutdown()) {
+            toast("Scan is already running");
+            selectTab(1);
+            return;
+        }
+        List<String> targets = expandTargets(lines(targetsInput.getText().toString()), Math.max(1, intValue(totalInput, 72000)));
+        List<String> snis = lines(snisInput.getText().toString());
+        List<Integer> ports = parsePorts(portsInput.getText().toString());
+        if (targets.isEmpty() || ports.isEmpty()) {
+            toast("Targets and ports are required");
+            return;
+        }
         stop.set(false);
         allResults.clear();
         checkedTargets.set(0);
@@ -967,16 +1086,14 @@ public class MainActivity extends Activity {
         resultList.removeAllViews();
         logView.setText("");
         bestView.setText("Best result will appear here");
-
-        List<String> targets = cap(expandTargets(lines(targetsInput.getText().toString())), intValue(totalInput, 72000));
-        List<String> snis = lines(snisInput.getText().toString());
-        List<Integer> ports = parsePorts(portsInput.getText().toString());
-        if (targets.isEmpty() || ports.isEmpty()) {
-            toast("Targets and ports are required");
-            return;
-        }
         if (snis.isEmpty()) snis = Collections.singletonList("");
         List<Integer> workflowProfiles = selectedWorkflowProfiles();
+        if (workflowProfiles.isEmpty()) {
+            toast("Select at least one manual workflow step");
+            selectTab(0);
+            updateScanPlanPreview();
+            return;
+        }
         boolean allSniPreference = multiSni.isChecked();
         boolean suppressNoisyLogs = hideNoisyLogs.isChecked();
         String httpPath = pathInput.getText().toString();
@@ -989,6 +1106,7 @@ public class MainActivity extends Activity {
         startButton.setEnabled(false);
         stopButton.setEnabled(true);
         status.setText("Running");
+        selectTab(1);
         appendLog("Scan started: expanded_targets=" + targets.size() + ", sni_hosts=" + snis.size() +
                 ", probe_units=" + totalTargets + ", ports=" + ports + ", batch=" + batch +
                 ", threads=" + threads + ", workflow=" + workflowSpinner.getSelectedItem() +
@@ -998,6 +1116,13 @@ public class MainActivity extends Activity {
         List<String> finalSnis = snis;
         new Thread(() -> runWorkflow(targets, finalSnis, ports, batch, timeout, workflowProfiles,
                 allSniPreference, httpPath, tlsMode, suppressNoisyLogs), "scan-orchestrator").start();
+    }
+
+    private void requestStop() {
+        stop.set(true);
+        status.setText("Stopping");
+        stopButton.setEnabled(false);
+        appendLog("Stop requested. Current sockets will finish or time out.");
     }
 
     private List<Integer> selectedWorkflowProfiles() {
@@ -1016,11 +1141,11 @@ public class MainActivity extends Activity {
         } else {
             profiles.add(profileSpinner == null ? 1 : profileSpinner.getSelectedItemPosition());
         }
-        if (profiles.isEmpty()) profiles.add(profileSpinner == null ? 1 : profileSpinner.getSelectedItemPosition());
         return profiles;
     }
 
     private String workflowLabels(List<Integer> profiles) {
+        if (profiles.isEmpty()) return "No manual steps selected";
         ArrayList<String> labels = new ArrayList<>();
         for (int profile : profiles) labels.add(profileName(profile));
         return joinComma(labels);
@@ -1052,6 +1177,7 @@ public class MainActivity extends Activity {
             stopButton.setEnabled(false);
             status.setText(stop.get() ? "Stopped" : "Ready");
             appendLog((stop.get() ? "Stopped" : "Complete") + " in " + elapsed());
+            if (!stop.get()) checkedTargets.set(totalTargets);
             if (!stop.get()) saveLocalObservationHistory();
             updateProgress();
             renderResults();
@@ -1164,23 +1290,62 @@ public class MainActivity extends Activity {
         renderStableHistoryPanel();
         resultList.removeAllViews();
         if (snapshot.isEmpty()) {
-            resultList.addView(emptyVaultView());
+            resultList.addView(emptyResultsView());
             return;
         }
         resultList.addView(resultSummaryStrip(snapshot));
-        if (!batteryFriendlyMode() && vaultModeSpinner != null && vaultModeSpinner.getSelectedItemPosition() == 1) {
+        if (!batteryFriendlyMode() && visualizationMode == 1) {
             resultList.addView(heatmapView(snapshot));
-            return;
         }
-        int limit = Math.min(intValue(resultLimitInput, 250), snapshot.size());
+        int limit = Math.min(Math.max(1, intValue(resultLimitInput, 250)), snapshot.size());
         if (batteryFriendlyMode()) limit = Math.min(limit, 75);
-        for (int i = 0; i < limit; i++) resultList.addView(resultView(snapshot.get(i)));
+        int maxStart = Math.max(0, snapshot.size() - limit);
+        resultOffset = Math.min(Math.max(0, resultOffset), maxStart);
+        int end = Math.min(snapshot.size(), resultOffset + limit);
+        for (int i = resultOffset; i < end; i++) resultList.addView(resultView(snapshot.get(i)));
+        if (limit < snapshot.size()) {
+            resultList.addView(resultPager(resultOffset, end, snapshot.size(), limit));
+        }
+    }
+
+    private void renderResultsFromFirstPage() {
+        resultOffset = 0;
+        renderResults();
+    }
+
+    private View resultPager(int start, int end, int total, int pageSize) {
+        LinearLayout panel = column();
+        panel.setBackground(glassBg(Color.rgb(8, 20, 29), Color.argb(60, 255, 255, 255)));
+        panel.setPadding(dp(9), dp(6), dp(9), dp(8));
+        setOuterMargin(panel, 0, dp(6), 0, dp(8));
+        panel.addView(text("Showing cards " + (start + 1) + "-" + end + " of " + total, 11, Color.rgb(185, 210, 222), false));
+        LinearLayout controls = row();
+        Button prev = button("Previous", Color.rgb(24, 45, 58), Color.WHITE);
+        Button next = button("Next", Color.rgb(24, 45, 58), Color.WHITE);
+        prev.setEnabled(start > 0);
+        next.setEnabled(end < total);
+        prev.setOnClickListener(v -> {
+            resultOffset = Math.max(0, resultOffset - pageSize);
+            renderResults();
+        });
+        next.setOnClickListener(v -> {
+            resultOffset = Math.min(Math.max(0, total - pageSize), resultOffset + pageSize);
+            renderResults();
+        });
+        controls.addView(prev, weight());
+        controls.addView(next, weight());
+        panel.addView(controls);
+        return panel;
     }
 
     private View resultSummaryStrip(List<Result> rows) {
         int working = 0;
         long latencySum = 0, best = Long.MAX_VALUE;
         int latencyCount = 0;
+        int rawCount;
+        synchronized (allResults) {
+            rawCount = allResults.size();
+        }
         for (Result r : rows) {
             if (r.working()) working++;
             long latency = r.totalLatency();
@@ -1191,30 +1356,53 @@ public class MainActivity extends Activity {
             }
         }
         int success = rows.isEmpty() ? 0 : Math.round(working * 100f / rows.size());
-        String line = "Visible results: " + rows.size() +
+        String line = "Visible results: " + rows.size() + " of " + rawCount +
                 " | alive/working " + working +
                 " | success " + success + "%" +
                 " | best " + (best == Long.MAX_VALUE ? "--" : best + "ms") +
                 " | avg " + (latencyCount == 0 ? "--" : Math.round(latencySum / (float) latencyCount) + "ms") +
-                " | filter " + (filterWorking.isChecked() ? "alive only" : "all");
+                " | filters " + filterSummary();
         TextView v = panelText(line);
         v.setTypeface(Typeface.MONOSPACE);
         return v;
     }
 
-    private View emptyVaultView() {
+    private View emptyResultsView() {
         LinearLayout card = column();
         card.setPadding(dp(16), dp(14), dp(16), dp(14));
         card.setBackground(glassBg(Color.rgb(10, 28, 41), Color.argb(130, 255, 255, 255)));
         TextView icon = text("⌕", 34, BLUE, true);
         icon.setGravity(Gravity.CENTER);
         card.addView(icon);
-        card.addView(text("No visible edges yet", 16, Color.WHITE, true));
-        card.addView(text("Pick provider cards, review the valid target chips, then start the Auto multi-step ladder. If a scan already ran, loosen filters to reveal hidden rows.", 12, Color.rgb(205, 226, 238), false));
-        Button cta = button("Go to Target Setup", Color.rgb(22, 54, 72), Color.WHITE);
-        cta.setOnClickListener(v -> scrollTo(targetAnchor));
+        boolean hasRows;
+        synchronized (allResults) { hasRows = !allResults.isEmpty(); }
+        card.addView(text(hasRows ? "Filters hid every row" : "No visible edges yet", 16, Color.WHITE, true));
+        card.addView(text(hasRows ? "Loosen provider, score, latency, SNI, certificate, or status filters to reveal existing scan rows." :
+                "Start a scan from Sources. Result cards will stay here; copy and export never replace them.", 12, Color.rgb(205, 226, 238), false));
+        Button cta = button(hasRows ? "Clear filters" : "Open Sources", Color.rgb(22, 54, 72), Color.WHITE);
+        cta.setOnClickListener(v -> {
+            if (hasRows) clearResultFilters();
+            else selectTab(0);
+        });
         card.addView(cta);
         return card;
+    }
+
+    private void clearResultFilters() {
+        resultOffset = 0;
+        if (filterWorking != null) filterWorking.setChecked(false);
+        if (filterTlsHttp != null) filterTlsHttp.setChecked(false);
+        if (requireHttp != null) requireHttp.setChecked(false);
+        if (requireKnownCdn != null) requireKnownCdn.setChecked(false);
+        if (requireTls13 != null) requireTls13.setChecked(false);
+        if (bestPerIp != null) bestPerIp.setChecked(false);
+        if (cdnProviderSpinner != null) cdnProviderSpinner.setSelection(0);
+        if (maxLatencyInput != null) maxLatencyInput.setText("");
+        if (cdnFilterInput != null) cdnFilterInput.setText("");
+        if (certFilterInput != null) certFilterInput.setText("");
+        if (sniFilterInput != null) sniFilterInput.setText("");
+        if (minQualityInput != null) minQualityInput.setText("");
+        renderResults();
     }
 
     private void updateAnalytics(List<Result> rows) {
@@ -1318,9 +1506,9 @@ public class MainActivity extends Activity {
         LinearLayout panel = column();
         panel.setPadding(dp(12), dp(10), dp(12), dp(12));
         panel.setBackground(glassBg(Color.rgb(8, 24, 36), Color.argb(120, 255, 255, 255)));
-        panel.addView(text("CIDR heatmap overview", 15, Color.WHITE, true));
+        panel.addView(text("Heatmap overview", 15, Color.WHITE, true));
         panel.addView(text("Each tile is a filtered result: green HTTP, cyan TLS, amber TCP, red failed.", 12, MUTED, false));
-        int columns = 16;
+        int columns = 12;
         LinearLayout row = null;
         int limit = Math.min(rows.size(), 512);
         for (int i = 0; i < limit; i++) {
@@ -1359,14 +1547,16 @@ public class MainActivity extends Activity {
         List<Result> snapshot;
         synchronized (allResults) { snapshot = new ArrayList<>(allResults); }
         int maxLatency = intValue(maxLatencyInput, 0);
-        String cdn = cdnFilterInput.getText().toString().trim().toLowerCase(Locale.US);
-        String cert = certFilterInput.getText().toString().trim().toLowerCase(Locale.US);
-        String sni = sniFilterInput.getText().toString().trim().toLowerCase(Locale.US);
+        String cdnPreset = cdnProviderSpinner == null || cdnProviderSpinner.getSelectedItem() == null ? "Any provider" : cdnProviderSpinner.getSelectedItem().toString();
+        String cdn = cdnFilterInput == null ? "" : cdnFilterInput.getText().toString().trim().toLowerCase(Locale.US);
+        String cert = certFilterInput == null ? "" : certFilterInput.getText().toString().trim().toLowerCase(Locale.US);
+        String sni = sniFilterInput == null ? "" : sniFilterInput.getText().toString().trim().toLowerCase(Locale.US);
         int minQuality = intValue(minQualityInput, 0);
         snapshot.removeIf(r -> (filterWorking.isChecked() && !r.working()) ||
-                (filterSni.isChecked() && !(r.tlsPass || r.httpPass)) ||
+                (filterTlsHttp.isChecked() && !(r.tlsPass || r.httpPass)) ||
                 (requireHttp.isChecked() && !r.httpPass) ||
                 (requireKnownCdn.isChecked() && "UNKNOWN".equalsIgnoreCase(r.cdn)) ||
+                (!providerMatches(cdnPreset, r.cdn)) ||
                 (requireTls13.isChecked() && !r.tlsVersion.contains("1.3")) ||
                 (maxLatency > 0 && (r.totalLatency() <= 0 || r.totalLatency() > maxLatency)) ||
                 (minQuality > 0 && r.quality < minQuality) ||
@@ -1393,6 +1583,40 @@ public class MainActivity extends Activity {
         return snapshot;
     }
 
+    private boolean providerMatches(String preset, String provider) {
+        String choice = preset == null ? "" : preset.toLowerCase(Locale.US);
+        String cdn = provider == null ? "" : provider.toLowerCase(Locale.US);
+        if (choice.isEmpty() || choice.startsWith("any")) return true;
+        if (choice.startsWith("known")) return !cdn.isEmpty() && !"unknown".equals(cdn);
+        if (choice.startsWith("unknown")) return cdn.isEmpty() || "unknown".equals(cdn);
+        if (choice.contains("cloudfront") || choice.contains("aws")) return cdn.contains("cloudfront") || cdn.contains("aws") || cdn.contains("amazon");
+        if (choice.contains("cloudflare")) return cdn.contains("cloudflare");
+        if (choice.contains("akamai")) return cdn.contains("akamai");
+        if (choice.contains("fastly")) return cdn.contains("fastly");
+        if (choice.contains("github")) return cdn.contains("github");
+        if (choice.contains("google")) return cdn.contains("google") || cdn.contains("gcp");
+        if (choice.contains("azure")) return cdn.contains("azure") || cdn.contains("microsoft");
+        if (choice.contains("bunny")) return cdn.contains("bunny");
+        return cdn.contains(choice);
+    }
+
+    private String filterSummary() {
+        ArrayList<String> active = new ArrayList<>();
+        if (filterWorking != null && filterWorking.isChecked()) active.add("working");
+        if (filterTlsHttp != null && filterTlsHttp.isChecked()) active.add("TLS/HTTP");
+        if (requireHttp != null && requireHttp.isChecked()) active.add("HTTP");
+        if (requireKnownCdn != null && requireKnownCdn.isChecked()) active.add("known CDN");
+        if (requireTls13 != null && requireTls13.isChecked()) active.add("TLS 1.3");
+        if (bestPerIp != null && bestPerIp.isChecked()) active.add("best/IP");
+        if (cdnProviderSpinner != null && cdnProviderSpinner.getSelectedItemPosition() > 0) active.add(String.valueOf(cdnProviderSpinner.getSelectedItem()));
+        if (maxLatencyInput != null && !maxLatencyInput.getText().toString().trim().isEmpty()) active.add("latency");
+        if (minQualityInput != null && !minQualityInput.getText().toString().trim().isEmpty()) active.add("score");
+        if (cdnFilterInput != null && !cdnFilterInput.getText().toString().trim().isEmpty()) active.add("CDN text");
+        if (certFilterInput != null && !certFilterInput.getText().toString().trim().isEmpty()) active.add("cert");
+        if (sniFilterInput != null && !sniFilterInput.getText().toString().trim().isEmpty()) active.add("SNI");
+        return active.isEmpty() ? "none" : joinHuman(active);
+    }
+
     private View resultView(Result r) {
         LinearLayout card = column();
         card.setPadding(dp(compactMode() ? 8 : 10), dp(compactMode() ? 5 : 8), dp(compactMode() ? 8 : 10), dp(compactMode() ? 5 : 8));
@@ -1402,8 +1626,10 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.setMargins(0, dp(compactMode() ? 4 : 7), 0, 0);
         card.setLayoutParams(lp);
-        TextView top = text(r.address() + "  " + dash(r.sni), compactMode() ? 12 : 13, Color.WHITE, true);
+        TextView top = text(r.address(), compactMode() ? 13 : 15, Color.WHITE, true);
         top.setTypeface(Typeface.MONOSPACE);
+        TextView route = text("SNI " + dash(r.sni), compactMode() ? 11 : 12, highContrastMode() ? Color.WHITE : Color.rgb(190, 218, 232), false);
+        route.setSingleLine(false);
         LinearLayout signal = row();
         signal.setGravity(Gravity.START);
         signal.addView(statusDot("TCP", r.tcpPass, Color.rgb(54, 166, 255)), smallChipLp());
@@ -1414,6 +1640,7 @@ public class MainActivity extends Activity {
                 " | Q " + Math.round(r.quality), 12, Color.WHITE, false);
         body.setTypeface(Typeface.MONOSPACE);
         card.addView(top);
+        card.addView(route);
         card.addView(signal);
         card.addView(body);
         if (!compactMode() && !r.tlsVersion.isEmpty()) card.addView(text(r.tlsVersion + " | " + r.tlsCipher + " | ALPN " + dash(r.alpn) + " | TLS " + dash(r.tlsProfile), 11, highContrastMode() ? Color.WHITE : MUTED, false));
@@ -1450,7 +1677,8 @@ public class MainActivity extends Activity {
     }
 
     private void copyOne(Result r) {
-        copyWithFallback("result", r.address() + " " + r.sni + " q=" + Math.round(r.quality));
+        String route = r.sni == null || r.sni.isEmpty() ? "" : " " + r.sni;
+        copyToClipboardOrDialog("result", r.address() + route + " q=" + Math.round(r.quality));
     }
 
     private void copySelectedFormat() {
@@ -1462,12 +1690,12 @@ public class MainActivity extends Activity {
                 sb.append("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,cdn,quality,reason\n");
             } else if (format == 4) {
                 JSONArray arr = new JSONArray();
-                for (Result r : rows) if (r.working()) arr.put(r.json());
-                copyWithFallback("JSON", arr.toString(2));
+                for (Result r : rows) arr.put(r.json());
+                copyToClipboardOrDialog("JSON", arr.toString(2));
                 return;
             }
             LinkedHashSet<String> dedupe = new LinkedHashSet<>();
-            for (Result r : rows) if (r.working()) {
+            for (Result r : rows) if (r.ip != null && !r.ip.isEmpty()) {
                 if (format == 0) dedupe.add(r.ip);
                 else if (format == 1) dedupe.add(r.ip);
                 else if (format == 2) dedupe.add(r.address() + " " + r.sni);
@@ -1476,42 +1704,36 @@ public class MainActivity extends Activity {
             if (format == 0) sb.append(joinLines(dedupe));
             else if (format == 1) sb.append(joinComma(dedupe));
             else if (format == 2) sb.append(joinLines(dedupe));
-            copyWithFallback(String.valueOf(exportSpinner.getSelectedItem()), sb.toString());
+            copyToClipboardOrDialog(String.valueOf(exportSpinner.getSelectedItem()), sb.toString());
         } catch (Exception e) {
             toast("Copy failed: " + e.getMessage());
         }
     }
 
-    private void copyWorking(boolean csv) {
+    private void copyVisibleCsv() {
         List<Result> rows = filteredResults();
         StringBuilder sb = new StringBuilder();
-        if (csv) sb.append("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,cdn,quality,reason\n");
-        for (Result r : rows) if (r.working()) {
-            if (csv) sb.append(r.csv()).append('\n');
-            else sb.append(r.address()).append(' ').append(r.sni).append(" q=").append(Math.round(r.quality))
-                    .append(" cdn=").append(r.cdn).append('\n');
-        }
-        copyWithFallback(csv ? "CSV" : "working results", sb.toString());
+        sb.append("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,cdn,quality,reason\n");
+        for (Result r : rows) sb.append(r.csv()).append('\n');
+        copyToClipboardOrDialog("visible CSV", sb.toString());
     }
 
-    private void copyWithFallback(String label, String content) {
+    private void copyToClipboardOrDialog(String label, String content) {
         if (content == null || content.trim().isEmpty()) {
             toast("Nothing to copy");
             return;
         }
         try {
             clip(content);
-            if (copyFallbackView != null) {
-                copyFallbackView.setText("Manual copy fallback (" + label + ")\n" + content);
-            }
+            if (status != null) status.setText("Copied " + label + " | " + content.length() + " chars");
             toast("Copied " + label);
         } catch (Exception e) {
-            showManualCopyDialog("Manual copy fallback", content);
-            toast("Clipboard unavailable; manual copy opened");
+            showClipboardDialog("Clipboard unavailable", content);
+            toast("Clipboard unavailable; copy manually");
         }
     }
 
-    private void showManualCopyDialog(String title, String content) {
+    private void showClipboardDialog(String title, String content) {
         EditText box = new EditText(this);
         box.setText(content == null ? "" : content);
         box.setTextIsSelectable(true);
@@ -1529,7 +1751,7 @@ public class MainActivity extends Activity {
         try {
             JSONArray arr = new JSONArray();
             for (Result r : filteredResults()) arr.put(r.json());
-            File out = new File(getExternalFilesDir(null), "maybe_edge_scan_" + System.currentTimeMillis() + ".json");
+            File out = new File(getExternalFilesDir(null), "maybeedgescanner_scan_" + System.currentTimeMillis() + ".json");
             try (Writer w = new OutputStreamWriter(new FileOutputStream(out), StandardCharsets.UTF_8)) {
                 w.write(arr.toString(2));
             }
@@ -1725,7 +1947,7 @@ public class MainActivity extends Activity {
             return this;
         }
         boolean working() { return tcpPass || tlsPass || httpPass; }
-        String address() { return ip + ":" + port; }
+        String address() { return ip == null || ip.isEmpty() ? target : ip + ":" + port; }
         long totalLatency() { return (tcpPass ? tcpLatencyMs : 0) + (tlsPass ? tlsLatencyMs : 0) + (httpPass ? httpLatencyMs : 0); }
         String summary() { return address() + " " + sni + " " + cdn + " q=" + Math.round(quality) + " " + totalLatency() + "ms"; }
         JSONObject json() throws Exception {
@@ -1778,25 +2000,29 @@ public class MainActivity extends Activity {
     }
     private static List<Integer> parsePorts(String s) {
         LinkedHashSet<Integer> ports = new LinkedHashSet<>();
-        for (String p : s.split("[,;\\s]+")) {
+        for (String p : String.valueOf(s == null ? "" : s).split("[,;\\s]+")) {
             try { int v = Integer.parseInt(p.trim()); if (v > 0 && v < 65536) ports.add(v); } catch (Exception ignored) {}
         }
         if (ports.isEmpty()) ports.add(443);
         return new ArrayList<>(ports);
     }
-    private static List<String> cap(List<String> in, int n) { return in.subList(0, Math.min(in.size(), Math.max(1, n))); }
+    private static List<String> cap(List<String> in, int n) { return new ArrayList<>(in.subList(0, Math.min(in.size(), Math.max(1, n)))); }
     private static String first(List<String> xs) { return xs.isEmpty() ? "" : xs.get(0); }
+    private static boolean isIpv4(String x) {
+        if (x == null) return false;
+        String v = x.trim();
+        if (!v.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) return false;
+        String[] parts = v.split("\\.");
+        for (String part : parts) {
+            try { int n = Integer.parseInt(part); if (n < 0 || n > 255) return false; }
+            catch (Exception e) { return false; }
+        }
+        return true;
+    }
     private static boolean isIp(String x) {
         if (x == null) return false;
         String v = x.trim();
-        if (v.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
-            String[] parts = v.split("\\.");
-            for (String part : parts) {
-                try { int n = Integer.parseInt(part); if (n < 0 || n > 255) return false; }
-                catch (Exception e) { return false; }
-            }
-            return true;
-        }
+        if (isIpv4(v)) return true;
         if (!v.contains(":") || !v.matches("(?i)[0-9a-f:.]+")) return false;
         try { return InetAddress.getByName(v) instanceof Inet6Address; }
         catch (Exception e) { return false; }
@@ -1812,9 +2038,68 @@ public class MainActivity extends Activity {
         } catch (Exception e) { return Collections.emptyList(); }
     }
     private static List<String> expandTargets(List<String> raw) {
+        return expandTargets(raw, Integer.MAX_VALUE);
+    }
+
+    private static List<String> expandTargets(List<String> raw, int totalCap) {
         LinkedHashSet<String> out = new LinkedHashSet<>();
-        for (String x : raw) if (x.contains("/")) out.addAll(expandCidr(x, 200000)); else out.add(x);
+        int cap = Math.max(1, totalCap);
+        for (String x : raw) {
+            if (out.size() >= cap) break;
+            int remaining = Math.min(200000, cap - out.size());
+            if (x.contains("/")) out.addAll(expandCidr(x, remaining));
+            else if (x.contains("-")) out.addAll(expandRange(x, remaining));
+            else out.add(x);
+        }
         return new ArrayList<>(out);
+    }
+    private static int estimateExpandedTargetCount(Collection<String> raw, int perTokenCap) {
+        long total = 0;
+        for (String x : raw) {
+            if (x == null || x.trim().isEmpty()) continue;
+            if (x.contains("/")) total += estimateCidrCount(x, perTokenCap);
+            else if (x.contains("-")) total += estimateRangeCount(x, perTokenCap);
+            else total++;
+            if (total > Integer.MAX_VALUE) return Integer.MAX_VALUE;
+        }
+        return (int) total;
+    }
+    private static int estimateCidrCount(String cidr, int cap) {
+        try {
+            String[] p = cidr.split("/", 2);
+            if (p.length != 2 || !isIp(p[0]) || cap <= 0) return 0;
+            int prefix = Integer.parseInt(p[1]);
+            if (p[0].contains(":")) {
+                if (prefix < 0 || prefix > 128) return 0;
+                return cap;
+            }
+            if (prefix < 0 || prefix > 32) return 0;
+            long size = 1L << (32 - prefix);
+            long usable = size > 2 ? size - 2 : size;
+            return (int) Math.min(Math.max(0, usable), cap);
+        } catch (Exception ignored) { return 0; }
+    }
+    private static int estimateRangeCount(String range, int cap) {
+        try {
+            String[] p = range.split("-", 2);
+            if (p.length != 2 || !isIpv4(p[0]) || !isIpv4(p[1]) || cap <= 0) return 0;
+            long start = ipv4ToLong(p[0]);
+            long end = ipv4ToLong(p[1]);
+            if (end < start) return 0;
+            return (int) Math.min(end - start + 1, cap);
+        } catch (Exception ignored) { return 0; }
+    }
+    private static List<String> expandRange(String range, int cap) {
+        List<String> out = new ArrayList<>();
+        try {
+            String[] p = range.split("-", 2);
+            if (p.length != 2 || !isIpv4(p[0]) || !isIpv4(p[1]) || cap <= 0) return out;
+            long start = ipv4ToLong(p[0]);
+            long end = ipv4ToLong(p[1]);
+            if (end < start) return out;
+            for (long v = start; v <= end && out.size() < cap; v++) out.add(longToIpv4(v));
+        } catch (Exception ignored) {}
+        return out;
     }
     private static List<String> expandCidr(String cidr, int cap) {
         List<String> out = new ArrayList<>();
@@ -1826,7 +2111,9 @@ public class MainActivity extends Activity {
             if (prefix < 0 || prefix > 32) return out;
             long mask = prefix == 0 ? 0 : (0xffffffffL << (32 - prefix)) & 0xffffffffL;
             long start = ip & mask, end = start | (~mask & 0xffffffffL);
-            for (long v = start + 1; v < end && out.size() < cap; v++) out.add(longToIpv4(v));
+            long first = end - start + 1 <= 2 ? start : start + 1;
+            long last = end - start + 1 <= 2 ? end : end - 1;
+            for (long v = first; v <= last && out.size() < cap; v++) out.add(longToIpv4(v));
         } catch (Exception ignored) {}
         return out;
     }
@@ -1915,11 +2202,11 @@ public class MainActivity extends Activity {
     private static String sha256(byte[] bytes) throws Exception { byte[] d = MessageDigest.getInstance("SHA-256").digest(bytes); StringBuilder sb = new StringBuilder(); for (byte b : d) sb.append(String.format("%02x", b)); return sb.toString(); }
     private static String joinLines(Collection<String> xs) { StringBuilder sb = new StringBuilder(); for (String x : xs) sb.append(x).append('\n'); return sb.toString().trim(); }
     private static String joinComma(Collection<String> xs) { StringBuilder sb = new StringBuilder(); for (String x : xs) { if (sb.length() > 0) sb.append(','); sb.append(x); } return sb.toString(); }
+    private static String joinHuman(Collection<String> xs) { StringBuilder sb = new StringBuilder(); for (String x : xs) { if (sb.length() > 0) sb.append(", "); sb.append(x); } return sb.toString(); }
     private static String q(String s) { return "\"" + String.valueOf(s).replace("\"", "\"\"") + "\""; }
     private static String trim(String s, int n) { return s.length() <= n ? s : s.substring(0, n - 1) + "..."; }
     private static String dash(String s) { return s == null || s.isEmpty() ? "--" : s; }
     private static String cleanToken(String s) { return s.trim().replace("\"", "").replace(",", "").replace("[", "").replace("]", ""); }
-    private String yes(boolean b) { return b ? "yes" : "no"; }
     private String elapsed() { long s = Math.max(0, (System.currentTimeMillis() - scanStartedAt) / 1000); return s + "s"; }
     private void clip(String s) { ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("MaybeEdgeScanner", s)); }
     private String resourceLine() {
@@ -1931,21 +2218,347 @@ public class MainActivity extends Activity {
         long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
         return "battery " + (pct >= 0 ? pct + "%" : "n/a") + " | heap " + usedMb + "MB";
     }
-    private void appendLog(String s) { ui.post(() -> logView.append(new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "  " + s + "\n")); }
-    private int intValue(EditText e, int fallback) { try { String s = e.getText().toString().trim(); return s.isEmpty() ? fallback : Integer.parseInt(s); } catch (Exception ex) { return fallback; } }
+    private void appendLog(String s) { ui.post(() -> { if (logView != null) logView.append(new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "  " + s + "\n"); }); }
+    private int intValue(EditText e, int defaultValue) { try { String s = e.getText().toString().trim(); return s.isEmpty() ? defaultValue : Integer.parseInt(s); } catch (Exception ex) { return defaultValue; } }
     private LinearLayout column() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l; }
     private LinearLayout row() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER); return l; }
-    private TextView text(String s, int sp, int color, boolean bold) { TextView v = new TextView(this); v.setText(s); v.setTextSize(sp); v.setTextColor(color); if (bold) v.setTypeface(Typeface.DEFAULT_BOLD); v.setPadding(0, dp(4), 0, dp(4)); return v; }
-    private TextView panelText(String s) { TextView v = text(s, 12, Color.WHITE, false); v.setBackground(glassBg(PANEL, Color.argb(120, 255, 255, 255))); v.setPadding(dp(12), dp(10), dp(12), dp(10)); setOuterMargin(v, 0, dp(6), 0, dp(6)); return v; }
+    private TextView text(String s, int sp, int color, boolean bold) { TextView v = new TextView(this); v.setText(s); v.setTextSize(sp); v.setTextColor(color); if (bold) v.setTypeface(Typeface.DEFAULT_BOLD); v.setPadding(0, dp(4), 0, dp(4)); if (Build.VERSION.SDK_INT >= 23) v.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY); return v; }
+    private TextView panelText(String s) { TextView v = text(s, 12, Color.WHITE, false); v.setBackground(glassBg(PANEL, Color.argb(95, 255, 255, 255))); v.setPadding(dp(10), dp(8), dp(10), dp(8)); setOuterMargin(v, 0, dp(5), 0, dp(5)); return v; }
     private TextView glassText(String s) { TextView v = panelText(s); v.setTextColor(Color.rgb(196, 223, 235)); return v; }
-    private TextView infoCard(String title, String body) { TextView v = panelText(title + "\n" + body); v.setTextColor(Color.rgb(220, 238, 248)); return v; }
-    private LinearLayout supportFooter() {
+    private TextView quietNote(String body) { TextView v = text(body, 11, Color.rgb(185, 210, 222), false); v.setBackground(glassBg(Color.rgb(8, 20, 29), Color.argb(45, 255, 255, 255))); v.setPadding(dp(9), dp(6), dp(9), dp(6)); setOuterMargin(v, 0, dp(4), 0, dp(6)); return v; }
+    private LinearLayout segmentedChoice(String label, String[] names, ArrayList<Button> buttons, int selectedIndex, SegmentHandler afterChange) {
+        LinearLayout group = column();
+        group.setBackground(glassBg(Color.rgb(10, 24, 34), Color.argb(60, 255, 255, 255)));
+        group.setPadding(dp(7), dp(2), dp(7), dp(7));
+        setOuterMargin(group, 0, dp(4), 0, dp(4));
+        group.addView(section(label));
+        LinearLayout controls = row();
+        buttons.clear();
+        for (int i = 0; i < names.length; i++) {
+            final int index = i;
+            Button b = button(names[i], Color.rgb(24, 45, 58), Color.WHITE);
+            b.setContentDescription(label + ": " + names[i]);
+            b.setOnClickListener(v -> {
+                if (afterChange != null) afterChange.onSelect(index);
+                refreshSegmentButtons(buttons, index);
+            });
+            buttons.add(b);
+            controls.addView(b, weight());
+        }
+        group.addView(controls);
+        refreshSegmentButtons(buttons, selectedIndex);
+        return group;
+    }
+
+    private void refreshSegmentButtons(ArrayList<Button> buttons, int selectedIndex) {
+        for (int i = 0; i < buttons.size(); i++) styleSegmentButton(buttons.get(i), i == selectedIndex);
+    }
+
+    private interface SegmentHandler { void onSelect(int index); }
+
+    private void styleSegmentButton(Button button, boolean selected) {
+        button.setTextColor(selected ? Color.rgb(2, 18, 24) : Color.WHITE);
+        button.setBackground(glassBg(selected ? BLUE : Color.rgb(24, 45, 58),
+                selected ? Color.argb(210, 255, 255, 255) : Color.argb(95, 255, 255, 255)));
+    }
+
+    private LinearLayout collapsibleBox(String title, View body, boolean open) {
+        LinearLayout group = column();
+        setOuterMargin(group, 0, dp(8), 0, dp(8));
+        Button header = button((open ? "- " : "+ ") + title, Color.rgb(16, 38, 52), Color.WHITE);
+        body.setVisibility(open ? View.VISIBLE : View.GONE);
+        header.setContentDescription(title + (open ? " expanded" : " collapsed"));
+        header.setOnClickListener(v -> {
+            boolean show = body.getVisibility() != View.VISIBLE;
+            body.setVisibility(show ? View.VISIBLE : View.GONE);
+            header.setText((show ? "- " : "+ ") + title);
+            header.setContentDescription(title + (show ? " expanded" : " collapsed"));
+        });
+        group.addView(header);
+        group.addView(body);
+        return group;
+    }
+
+    private LinearLayout diagnosticsRadioPanel() {
+        LinearLayout card = column();
+        card.setBackground(glassBg(Color.rgb(9, 22, 31), Color.argb(70, 255, 255, 255)));
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        setOuterMargin(card, 0, dp(8), 0, dp(8));
+        card.addView(text("Mobile radio control is device-specific", 12, Color.rgb(210, 231, 240), true));
+        card.addView(text("Shizuku lets the app ask Android's shell layer to read or change radio preference settings. These keys are not a public Android API; exact behavior varies by OEM, Android version, modem, carrier, and SIM slot. Nothing here runs automatically during scans.", 11, MUTED, false));
+
+        shizukuStatusView = panelText("Shizuku: checking");
+        card.addView(shizukuStatusView);
+
+        LinearLayout statusRow = row();
+        Button check = button("Check", Color.rgb(24, 45, 58), Color.WHITE);
+        Button request = button("Request access", Color.rgb(24, 45, 58), Color.WHITE);
+        Button read = button("Read modes", Color.rgb(24, 45, 58), Color.WHITE);
+        check.setOnClickListener(v -> refreshShizukuState());
+        request.setOnClickListener(v -> requestShizukuPermission());
+        read.setOnClickListener(v -> runShizukuRadioCommand("Read radio modes", buildReadModesCommand(), false));
+        statusRow.addView(check, weight());
+        statusRow.addView(request, weight());
+        statusRow.addView(read, weight());
+        card.addView(statusRow);
+
+        LinearLayout shizukuAppRow = row();
+        Button openShizuku = button("Open Shizuku", Color.rgb(24, 45, 58), Color.WHITE);
+        Button shizukuGuide = button("Setup guide", Color.rgb(24, 45, 58), Color.WHITE);
+        openShizuku.setOnClickListener(v -> openShizukuManager());
+        shizukuGuide.setOnClickListener(v -> openUrl("https://shizuku.rikka.app/guide/setup/"));
+        shizukuAppRow.addView(openShizuku, weight());
+        shizukuAppRow.addView(shizukuGuide, weight());
+        card.addView(shizukuAppRow);
+
+        LinearLayout modeRow = row();
+        Button lteOnly = button("LTE only", Color.rgb(24, 45, 58), Color.WHITE);
+        Button nrLte = button("5G/LTE", Color.rgb(24, 45, 58), Color.WHITE);
+        Button auto = button("Auto", Color.rgb(24, 45, 58), Color.WHITE);
+        lteOnly.setOnClickListener(v -> confirmRadioMode("LTE only", "11", "LTE-only can remove service where LTE is weak or unavailable. Use Auto to undo it."));
+        nrLte.setOnClickListener(v -> confirmRadioMode("5G/LTE preferred", "33", "5G/LTE values are especially OEM-dependent. If the readback looks wrong, use Auto or the phone settings panel."));
+        auto.setOnClickListener(v -> confirmRadioMode("Auto network", "9", "Auto restores a broad LTE/GSM/WCDMA preference on many Android devices. Some devices may use a different default."));
+        modeRow.addView(lteOnly, weight());
+        modeRow.addView(nrLte, weight());
+        modeRow.addView(auto, weight());
+        card.addView(modeRow);
+
+        LinearLayout settingsRow = row();
+        Button mobile = button("Mobile settings", Color.rgb(24, 45, 58), Color.WHITE);
+        Button wireless = button("Network settings", Color.rgb(24, 45, 58), Color.WHITE);
+        mobile.setOnClickListener(v -> openAndroidSettings(android.provider.Settings.ACTION_NETWORK_OPERATOR_SETTINGS, "Mobile network settings unavailable"));
+        wireless.setOnClickListener(v -> openAndroidSettings(android.provider.Settings.ACTION_WIRELESS_SETTINGS, "Network settings unavailable"));
+        settingsRow.addView(mobile, weight());
+        settingsRow.addView(wireless, weight());
+        card.addView(settingsRow);
+
+        LinearLayout custom = column();
+        custom.addView(quietNote("Advanced override is limited to a settings key and numeric value. It is for SIM-slot/OEM variants, not arbitrary shell commands."));
+        LinearLayout customRow = row();
+        shizukuKeyInput = input("preferred_network_mode", false);
+        shizukuValueInput = input("11", true);
+        customRow.addView(box("Settings key", shizukuKeyInput), weight());
+        customRow.addView(box("Value", shizukuValueInput), weight());
+        custom.addView(customRow);
+        Button applyCustom = button("Apply custom", Color.rgb(24, 45, 58), Color.WHITE);
+        applyCustom.setOnClickListener(v -> confirmCustomRadioMode());
+        custom.addView(applyCustom);
+        card.addView(collapsibleBox("Advanced radio key", custom, false));
+
+        shizukuOutputView = panelText("No radio command has run in this session.");
+        shizukuOutputView.setTypeface(Typeface.MONOSPACE);
+        shizukuOutputView.setTextIsSelectable(true);
+        card.addView(shizukuOutputView);
+        return card;
+    }
+
+    private void addShizukuListener() {
+        try {
+            Shizuku.addRequestPermissionResultListener(shizukuPermissionListener);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void removeShizukuListener() {
+        try {
+            Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void onShizukuPermissionResult(int requestCode, int grantResult) {
+        if (requestCode != SHIZUKU_REQUEST_CODE) return;
+        ui.post(() -> {
+            refreshShizukuState();
+            toast(grantResult == PackageManager.PERMISSION_GRANTED ? "Shizuku access granted" : "Shizuku access denied");
+        });
+    }
+
+    private boolean shizukuAvailable() {
+        try {
+            return Shizuku.pingBinder();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private boolean shizukuPermissionGranted() {
+        try {
+            return shizukuAvailable() && !Shizuku.isPreV11() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private void refreshShizukuState() {
+        if (shizukuStatusView == null) return;
+        if (!shizukuAvailable()) {
+            shizukuStatusView.setText("Shizuku: not running\nStart Shizuku, then tap Check. The regular Android settings buttons still work without it.");
+            return;
+        }
+        try {
+            if (Shizuku.isPreV11()) {
+                shizukuStatusView.setText("Shizuku: unsupported server\nThis app needs Shizuku v11+ permission APIs.");
+                return;
+            }
+        } catch (Throwable ignored) {
+        }
+        boolean granted = shizukuPermissionGranted();
+        StringBuilder sb = new StringBuilder();
+        sb.append("Shizuku: ").append(granted ? "ready" : "permission needed");
+        try { sb.append("\nVersion: ").append(Shizuku.getVersion()); } catch (Throwable ignored) {}
+        try { sb.append("\nShell UID: ").append(Shizuku.getUid()); } catch (Throwable ignored) {}
+        sb.append("\nRadio writes: explicit user action only");
+        shizukuStatusView.setText(sb.toString());
+    }
+
+    private void requestShizukuPermission() {
+        if (!shizukuAvailable()) {
+            refreshShizukuState();
+            toast("Start Shizuku first");
+            return;
+        }
+        if (shizukuPermissionGranted()) {
+            refreshShizukuState();
+            toast("Shizuku is already allowed");
+            return;
+        }
+        try {
+            if (Shizuku.isPreV11()) {
+                setShizukuOutput("This device is running an unsupported Shizuku server. Update Shizuku, then try again.");
+                return;
+            }
+            if (Shizuku.shouldShowRequestPermissionRationale()) {
+                setShizukuOutput("Shizuku permission was denied with rationale required. Open Shizuku, allow this app, then tap Check.");
+                toast("Allow this app inside Shizuku");
+                return;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Shizuku.requestPermission(SHIZUKU_REQUEST_CODE);
+        } catch (Throwable e) {
+            setShizukuOutput("Permission request failed: " + e.getClass().getSimpleName() + ": " + safeMessage(e));
+        }
+    }
+
+    private void openShizukuManager() {
+        try {
+            Intent intent = getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
+            if (intent == null) throw new IllegalStateException("Shizuku manager is not installed");
+            startActivity(intent);
+        } catch (Throwable e) {
+            setShizukuOutput("Could not open Shizuku manager: " + safeMessage(e));
+            openUrl("https://shizuku.rikka.app/download/");
+        }
+    }
+
+    private void openUrl(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)));
+        } catch (Exception e) {
+            clip(url);
+            toast("Link copied");
+        }
+    }
+
+    private void confirmRadioMode(String label, String value, String warning) {
+        String command = buildPutModesCommand(value);
+        new AlertDialog.Builder(this)
+                .setTitle("Apply " + label + "?")
+                .setMessage(warning + "\n\nThe app will write value " + value + " to common preferred_network_mode keys and then read them back.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Apply", (d, which) -> runShizukuRadioCommand(label, command, true))
+                .show();
+    }
+
+    private void confirmCustomRadioMode() {
+        String key = shizukuKeyInput == null ? "" : shizukuKeyInput.getText().toString().trim();
+        String value = shizukuValueInput == null ? "" : shizukuValueInput.getText().toString().trim();
+        if (!key.matches("[A-Za-z0-9_.-]{3,80}") || !value.matches("[0-9]{1,4}")) {
+            toast("Use a simple settings key and numeric value");
+            return;
+        }
+        String command = "settings put global " + key + " " + value + " && echo " + key + "=$(settings get global " + key + " 2>/dev/null)";
+        new AlertDialog.Builder(this)
+                .setTitle("Apply custom radio value?")
+                .setMessage("Key: " + key + "\nValue: " + value + "\n\nThis is for OEM or SIM-slot variants only. Keep a reset path available.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Apply", (d, which) -> runShizukuRadioCommand("Custom radio value", command, true))
+                .show();
+    }
+
+    private String buildReadModesCommand() {
+        StringBuilder cmd = new StringBuilder("echo radio-preferred-network-modes; ");
+        for (String key : RADIO_MODE_KEYS) {
+            cmd.append("echo ").append(key).append("=$(settings get global ").append(key).append(" 2>/dev/null); ");
+        }
+        return cmd.toString();
+    }
+
+    private String buildPutModesCommand(String value) {
+        StringBuilder cmd = new StringBuilder("echo applying-value-").append(value).append("; ");
+        for (String key : RADIO_MODE_KEYS) {
+            cmd.append("settings put global ").append(key).append(" ").append(value).append(" 2>/dev/null || true; ");
+        }
+        cmd.append(buildReadModesCommand());
+        return cmd.toString();
+    }
+
+    private void runShizukuRadioCommand(String label, String command, boolean writeAction) {
+        if (!shizukuPermissionGranted()) {
+            refreshShizukuState();
+            requestShizukuPermission();
+            return;
+        }
+        setShizukuOutput(label + " running...");
+        new Thread(() -> {
+            String output;
+            int exitCode = -1;
+            try {
+                Process process = Shizuku.newProcess(new String[]{"sh", "-c", command}, null, null);
+                String stdout = readAll(process.getInputStream());
+                String stderr = readAll(process.getErrorStream());
+                exitCode = process.waitFor();
+                output = "Action: " + label + "\nExit: " + exitCode + "\n\n" + stdout.trim();
+                if (!stderr.trim().isEmpty()) output += "\n\nstderr:\n" + stderr.trim();
+            } catch (Throwable e) {
+                output = "Action: " + label + "\nFailed: " + e.getClass().getSimpleName() + ": " + safeMessage(e);
+            }
+            final String finalOutput = output;
+            final int finalExitCode = exitCode;
+            ui.post(() -> {
+                refreshShizukuState();
+                setShizukuOutput(finalOutput);
+                toast(finalExitCode == 0 ? (writeAction ? "Radio mode applied; readback shown" : "Radio modes read") : "Shizuku command failed");
+            });
+        }, "shizuku-radio").start();
+    }
+
+    private void setShizukuOutput(String text) {
+        if (shizukuOutputView != null) shizukuOutputView.setText(text);
+    }
+
+    private String readAll(InputStream in) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line).append('\n');
+        }
+        return sb.toString();
+    }
+
+    private String safeMessage(Throwable e) {
+        return e.getMessage() == null ? "no message" : e.getMessage();
+    }
+
+    private LinearLayout diagnosticsSupportPanel() {
         LinearLayout card = column();
         card.setBackground(glassBg(Color.rgb(9, 22, 31), Color.argb(70, 255, 255, 255)));
         card.setPadding(dp(12), dp(10), dp(12), dp(10));
         setOuterMargin(card, 0, dp(14), 0, dp(8));
-        TextView title = text("Support development (optional)", 12, Color.rgb(210, 231, 240), true);
-        TextView body = text("GitHub: " + SUPPORT_GITHUB + "\nBTC: " + SUPPORT_BTC + "\nEVM/ETH/ERC20/BNB/BEP20: " + SUPPORT_EVM + "\nPlease verify the correct network before sending assets.", 11, MUTED, false);
+        TextView title = text("Support", 12, Color.rgb(210, 231, 240), true);
+        TextView body = text("Project link and donation addresses are kept here so they never interrupt setup or results.", 11, MUTED, false);
         body.setTextIsSelectable(true);
         card.addView(title);
         card.addView(body);
@@ -1962,14 +2575,22 @@ public class MainActivity extends Activity {
         card.addView(actions);
         return card;
     }
-    private TextView section(String s) { TextView v = text(s, 12, Color.rgb(180, 215, 230), true); v.setPadding(dp(2), dp(12), 0, dp(4)); v.setLetterSpacing(0.08f); return v; }
+    private TextView section(String s) { TextView v = text(s, 12, Color.rgb(180, 215, 230), true); v.setPadding(dp(2), dp(10), 0, dp(4)); v.setLetterSpacing(0f); return v; }
     private TextView pill(String s) { TextView v = text(s, 13, BLUE, true); v.setGravity(Gravity.CENTER); v.setBackground(glassBg(Color.rgb(16, 35, 50), BLUE)); v.setPadding(dp(12), dp(8), dp(12), dp(8)); setOuterMargin(v, 0, dp(8), 0, dp(8)); return v; }
-    private EditText area(String hint) { EditText e = input("", false); e.setHint(hint); e.setMinLines(4); e.setGravity(Gravity.TOP); return e; }
-    private EditText input(String s, boolean number) { EditText e = new EditText(this); e.setText(s); e.setTextColor(Color.WHITE); e.setTextSize(14); e.setHintTextColor(Color.rgb(145, 174, 190)); e.setSingleLine(false); e.setInputType((number ? InputType.TYPE_CLASS_NUMBER : InputType.TYPE_CLASS_TEXT) | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); e.setBackground(glassBg(FIELD, Color.argb(95, 255, 255, 255))); e.setPadding(dp(12), dp(10), dp(12), dp(10)); return e; }
-    private CheckBox check(String s) { CheckBox c = new CheckBox(this); c.setText(s); c.setTextSize(13); c.setTextColor(Color.WHITE); c.setButtonTintList(android.content.res.ColorStateList.valueOf(BLUE)); return c; }
-    private Button button(String s, int bg, int fg) { Button b = new Button(this); b.setText(s); b.setTextColor(fg); b.setTextSize(13); b.setAllCaps(false); b.setTypeface(Typeface.DEFAULT_BOLD); b.setBackground(glassBg(bg, Color.argb(135, 255, 255, 255))); b.setPadding(dp(10), dp(8), dp(10), dp(8)); b.setOnTouchListener((v, e) -> { if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) { v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP); v.animate().scaleX(0.98f).scaleY(0.98f).setDuration(70).start(); } if (e.getAction() == android.view.MotionEvent.ACTION_UP || e.getAction() == android.view.MotionEvent.ACTION_CANCEL) v.animate().scaleX(1f).scaleY(1f).setDuration(130).setInterpolator(new DecelerateInterpolator()).start(); return false; }); return b; }
-    private Spinner spinner(String[] values) { Spinner s = new Spinner(this); ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, values); s.setAdapter(adapter); s.setBackground(glassBg(FIELD, Color.argb(95, 255, 255, 255))); s.setPadding(dp(8), dp(6), dp(8), dp(6)); return s; }
-    private LinearLayout box(String label, View child) { LinearLayout l = column(); l.setBackground(glassBg(Color.rgb(11, 26, 37), Color.argb(75, 255, 255, 255))); l.setPadding(dp(8), dp(4), dp(8), dp(8)); l.addView(section(label)); l.addView(child); return l; }
+    private EditText area(String hint) { EditText e = input("", false); e.setHint(hint); e.setMinLines(3); e.setMaxLines(7); e.setGravity(Gravity.TOP); return e; }
+    private EditText input(String s, boolean number) { EditText e = new EditText(this); e.setText(s); e.setTextColor(Color.WHITE); e.setTextSize(13); e.setHintTextColor(Color.rgb(145, 174, 190)); e.setSingleLine(false); e.setMaxLines(number ? 1 : 4); e.setHorizontallyScrolling(false); int type = number ? InputType.TYPE_CLASS_NUMBER : (InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE); e.setInputType(type | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); e.setBackground(glassBg(FIELD, Color.argb(85, 255, 255, 255))); e.setPadding(dp(10), dp(8), dp(10), dp(8)); return e; }
+    private CheckBox check(String s) { CheckBox c = new CheckBox(this); c.setText(s); c.setTextSize(12); c.setTextColor(Color.WHITE); c.setMinHeight(dp(40)); c.setButtonTintList(android.content.res.ColorStateList.valueOf(BLUE)); return c; }
+    private Button button(String s, int bg, int fg) { Button b = new Button(this); b.setText(s); b.setTextColor(fg); b.setTextSize(12); b.setMinHeight(dp(42)); b.setAllCaps(false); b.setTypeface(Typeface.DEFAULT_BOLD); b.setBackground(glassBg(bg, Color.argb(125, 255, 255, 255))); b.setPadding(dp(9), dp(7), dp(9), dp(7)); b.setOnTouchListener((v, e) -> { if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) { v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP); v.animate().scaleX(0.98f).scaleY(0.98f).setDuration(70).start(); } if (e.getAction() == android.view.MotionEvent.ACTION_UP || e.getAction() == android.view.MotionEvent.ACTION_CANCEL) v.animate().scaleX(1f).scaleY(1f).setDuration(130).setInterpolator(new DecelerateInterpolator()).start(); return false; }); return b; }
+    private Spinner spinner(String[] values) {
+        Spinner s = new Spinner(this);
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, values);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        s.setAdapter(adapter);
+        s.setBackground(glassBg(FIELD, Color.argb(85, 255, 255, 255)));
+        s.setPadding(dp(8), dp(5), dp(8), dp(5));
+        return s;
+    }
+    private LinearLayout box(String label, View child) { LinearLayout l = column(); l.setBackground(glassBg(Color.rgb(10, 24, 34), Color.argb(60, 255, 255, 255))); l.setPadding(dp(7), dp(2), dp(7), dp(7)); l.addView(section(label)); l.addView(child); return l; }
     private LinearLayout.LayoutParams weight() { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1); lp.setMargins(dp(4), dp(4), dp(4), dp(4)); return lp; }
     private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_LONG).show(); }
@@ -1982,14 +2603,21 @@ public class MainActivity extends Activity {
             toast("GitHub link copied");
         }
     }
-    private boolean highContrastMode() { return visualModeSpinner != null && visualModeSpinner.getSelectedItemPosition() == 1; }
-    private boolean compactMode() { return visualModeSpinner != null && visualModeSpinner.getSelectedItemPosition() == 2; }
+    private void openAndroidSettings(String action, String fallbackMessage) {
+        try {
+            startActivity(new Intent(action));
+        } catch (Exception e) {
+            toast(fallbackMessage);
+        }
+    }
+    private boolean highContrastMode() { return densityMode == 1; }
+    private boolean compactMode() { return densityMode == 2; }
     private GradientDrawable glassBg(int fill, int stroke) {
         int fillAlpha = highContrastMode() ? 245 : 215;
         int shineAlpha = highContrastMode() ? 40 : 120;
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
                 new int[]{Color.argb(fillAlpha, Color.red(fill), Color.green(fill), Color.blue(fill)), Color.argb(shineAlpha, 255, 255, 255)});
-        g.setCornerRadius(dp(compactMode() ? 10 : 16));
+        g.setCornerRadius(dp(compactMode() ? 7 : 10));
         g.setStroke(dp(highContrastMode() ? 2 : 1), stroke);
         return g;
     }

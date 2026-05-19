@@ -116,7 +116,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(maybeedgescanner_results_total[1m]) or rate(maybescanner_results_total[1m])",
+          "expr": "rate(maybeedgescanner_results_total[1m])",
           "legendFormat": "results/sec",
           "range": true,
           "refId": "A"
@@ -127,7 +127,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(maybeedgescanner_http_pass_total[1m]) or rate(maybescanner_http_pass_total[1m])",
+          "expr": "rate(maybeedgescanner_http_pass_total[1m])",
           "legendFormat": "HTTP pass/sec",
           "range": true,
           "refId": "B"
@@ -138,7 +138,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(maybeedgescanner_tls_pass_total[1m]) or rate(maybescanner_tls_pass_total[1m])",
+          "expr": "rate(maybeedgescanner_tls_pass_total[1m])",
           "legendFormat": "TLS pass/sec",
           "range": true,
           "refId": "C"
@@ -207,7 +207,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "maybeedgescanner_goroutines or maybescanner_goroutines",
+          "expr": "maybeedgescanner_goroutines",
           "legendFormat": "goroutines",
           "range": true,
           "refId": "A"
@@ -276,7 +276,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "maybeedgescanner_heap_bytes or maybescanner_heap_bytes",
+          "expr": "maybeedgescanner_heap_bytes",
           "legendFormat": "heap",
           "range": true,
           "refId": "A"
@@ -368,7 +368,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(maybeedgescanner_timeout_total[1m]) or rate(maybescanner_timeout_total[1m])",
+          "expr": "rate(maybeedgescanner_timeout_total[1m])",
           "legendFormat": "timeouts/sec",
           "range": true,
           "refId": "A"
@@ -379,7 +379,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(maybeedgescanner_reset_total[1m]) or rate(maybescanner_reset_total[1m])",
+          "expr": "rate(maybeedgescanner_reset_total[1m])",
           "legendFormat": "resets/sec",
           "range": true,
           "refId": "B"

@@ -25,3 +25,18 @@ func TestCandidateSNIsKeepsTargetsAndCorpusSeparate(t *testing.T) {
 		})
 	}
 }
+
+func TestExpandTargetsExpandsIPv4RangesAndSmallCIDRs(t *testing.T) {
+	got := expandTargets([]string{"203.0.113.7-203.0.113.9", "198.51.100.42/32"}, 10, 10, false)
+	want := []string{"203.0.113.7", "203.0.113.8", "203.0.113.9", "198.51.100.42"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expandTargets()=%v, want %v", got, want)
+	}
+}
+
+func TestExpandRangeHonorsSafety(t *testing.T) {
+	got := expandTargets([]string{"192.168.1.1-192.168.1.3"}, 10, 10, true)
+	if len(got) != 0 {
+		t.Fatalf("expandTargets()=%v, want private range skipped", got)
+	}
+}

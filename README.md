@@ -8,13 +8,14 @@ The app is scanner-only. It is not a VPN client.
 
 - Bundled target corpora for community edge IPs, community `/24` CIDRs, Akamai, AWS CloudFront, Fastly, Cloudflare, GitHub Pages, Azure Front Door, Google CDN, Bunny CDN, StackPath/Edgio, and conventional cloud/CDN ranges.
 - Bundled SNI corpus merged with user-added SNIs and deduplicated before scanning.
-- Glass-style Android UI with setup, live, and vault surfaces.
-- Provider choice cards, comfort performance modes, per-source sample controls, score sorting, progress, live counters, beginner help, visual density modes, and high-contrast result semantics.
+- Three-part Android UI: `Sources` for scan setup, `Results` for cards/filtering/export, and `Diagnostics` for logs, network context, Shizuku radio tools, support, and reference material.
+- Provider choice cards, comfort performance modes, per-source sample controls, score sorting, progress, live counters, guided help, visual density modes, and high-contrast result semantics.
 - Scan profiles: Quick TCP, Standard TLS, Deep HTTP + SNI, and Verify CDN edge.
 - Workflow modes: run one selected profile, run the automatic TCP to TLS to HTTP to Verify ladder, or run manually selected scanner stages.
 - Filters for working status, TLS/HTTP status, known-CDN status, TLS 1.3, SNI text, CDN text, certificate text, max latency, and minimum score.
 - Sorting by newest, latency, score, CDN, SNI, HTTP-first, and TLS-first.
 - Copy/export filtered results as line-separated IPs, comma-separated IPs, IP/SNI pairs, CSV, or JSON.
+- Shizuku-backed radio diagnostics for explicit user-controlled network-mode reads and guarded LTE/5G/Auto writes on supported devices.
 - Android home-screen quick scan widget and Quick Settings tile.
 - Optional Go sidecar with streaming scan and DNS endpoints.
 - Safety mode with bundled do-not-scan CIDRs, strict CIDR expansion caps, reserved/special-use address skipping, pacing, jitter, and adaptive backoff when timeout/reset rates rise.
@@ -22,7 +23,7 @@ The app is scanner-only. It is not a VPN client.
 
 ## Current Status
 
-The Android UI is implemented with Java/programmatic views and already includes the requested scanner structure: setup/live/vault sections, provider cards, chip-style token validation previews, guided help, visual modes, network context banner, glass cards, live counters, analytics bars, heatmap/list vault views, haptics, and filtered export controls.
+The Android UI is implemented with Java/programmatic views. The active structure is `Sources`, `Results`, and `Diagnostics`: scan inputs stay in Sources, visible result shaping stays in Results, and operational context stays in Diagnostics. Result cards remain the primary artifact; copy/export never replaces the visual card surface with raw text.
 
 The Go sidecar is a standalone HTTP service. It uses structured `slog` logging, graceful HTTP shutdown, IPv4/IPv6 target parsing, uTLS ClientHello rotation, ALPN negotiation for `h2` and `http/1.1`, Alt-Svc HTTP/3 hint capture, and `github.com/miekg/dns` for DNS queries.
 
@@ -41,8 +42,26 @@ The GitHub worker is the recommended clean build path when local Android tooling
 
 Generated APKs:
 
-- `app/build/outputs/apk/debug/MaybeEdgeScanner-debug.apk`
-- `app/build/outputs/apk/release/MaybeEdgeScanner-release.apk`
+- `app/build/outputs/apk/universal/debug/MaybeEdgeScanner-universal-debug.apk`
+- `app/build/outputs/apk/universal/release/MaybeEdgeScanner-universal-release.apk`
+- `app/build/outputs/apk/armv7/release/MaybeEdgeScanner-armv7-release.apk`
+- `app/build/outputs/apk/armv8/release/MaybeEdgeScanner-armv8-release.apk`
+
+The `universal` artifact is the default recommendation. `armv7` targets `armeabi-v7a`; `armv8` targets `arm64-v8a`. The app is mostly Java, so the split artifacts are primarily release-channel clarity and future native-library readiness rather than a runtime requirement.
+
+## Shizuku Radio Diagnostics
+
+Diagnostics includes a guarded Shizuku panel for users who explicitly want to inspect or change Android radio preference settings.
+
+- Uses the official `dev.rikka.shizuku` API and provider.
+- Requests Shizuku permission only after the user taps the action.
+- Reads common `preferred_network_mode` keys before/after changes.
+- Provides guarded `LTE only`, `5G/LTE`, and `Auto` actions with confirmation dialogs.
+- Provides a sanitized advanced key/value override for OEM and SIM-slot variants.
+- Does not expose arbitrary shell commands.
+- Does not run during scans or change radio state automatically.
+
+Android radio integers and keys vary by OEM, carrier, Android version, modem, and SIM slot. If a device behaves unexpectedly, use `Auto`, the Android network settings button, or the Shizuku readback output to restore the intended mode.
 
 ## Install Identity
 
@@ -70,9 +89,9 @@ Preset choices can replace the current inputs or append to them. User-entered IP
 
 Per-source sample boxes control how many entries to load from each source. `0` means all entries from that source. The global total cap controls the final expanded scan sample.
 
-## Newcomer Guide
+## In-App Reference
 
-The app includes a `Guide & parameter help` button. It explains:
+The app includes a `Reference` button. It explains:
 
 - What targets are.
 - What SNI means.
@@ -158,8 +177,9 @@ The dashboard tracks scan throughput, pass rates, timeout/reset rates, goroutine
 - Runs `go test ./...` for the sidecar.
 - Builds Linux, Windows, and macOS sidecar binaries.
 - Downloads Gradle dependencies before Android compilation.
-- Builds debug and release APKs.
-- Uploads APK and sidecar artifacts.
+- Builds universal, armv7, and armv8 Android APK artifacts.
+- Verifies every signed release APK with `apksigner`.
+- Uploads all APK and sidecar artifacts.
 - Publishes `ghcr.io/<owner>/<repo>-deps:<sha>` and `ghcr.io/<owner>/<repo>-deps:latest`.
 - Uses BuildKit `gha` and registry cache layers so the dependency image reuses prior Go/Gradle layers and only refreshes changed dependency inputs.
 - Checks whether dependency manifests changed or the image is missing before publishing the dependency image, so app-only commits do not rebuild dependency layers from zero.

@@ -26,6 +26,25 @@ android {
         versionName '1.0.0'
     }
 
+    flavorDimensions 'artifactAbi'
+    productFlavors {
+        universal {
+            dimension 'artifactAbi'
+        }
+        armv7 {
+            dimension 'artifactAbi'
+            ndk {
+                abiFilters 'armeabi-v7a'
+            }
+        }
+        armv8 {
+            dimension 'artifactAbi'
+            ndk {
+                abiFilters 'arm64-v8a'
+            }
+        }
+    }
+
     signingConfigs {
         release {
             enableV1Signing true
@@ -61,8 +80,15 @@ android {
 
     applicationVariants.configureEach { variant ->
         variant.outputs.configureEach { output ->
-            output.outputFileName = "MaybeEdgeScanner-${variant.buildType.name}.apk"
+            def abiName = variant.flavorName ?: 'universal'
+            output.outputFileName = "MaybeEdgeScanner-${abiName}-${variant.buildType.name}.apk"
         }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+        coreLibraryDesugaringEnabled true
     }
 }
 
@@ -73,4 +99,8 @@ gradle.taskGraph.whenReady { taskGraph ->
 }
 
 dependencies {
+    def shizukuVersion = '13.1.5'
+    implementation "dev.rikka.shizuku:api:${shizukuVersion}"
+    implementation "dev.rikka.shizuku:provider:${shizukuVersion}"
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
 }

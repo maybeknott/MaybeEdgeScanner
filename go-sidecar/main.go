@@ -103,8 +103,6 @@ var (
 func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", index)
-	mux.HandleFunc("/dashboard.css", dashboardCSS)
-	mux.HandleFunc("/dashboard.js", dashboardJS)
 	mux.HandleFunc("/grafana-dashboard.json", grafanaDashboard)
 	mux.HandleFunc("/api/scan", scan)
 	mux.HandleFunc("/api/dns", scanDNS)
@@ -146,7 +144,7 @@ func main() {
 }
 
 func index(w http.ResponseWriter, _ *http.Request) {
-	page := `<!doctype html><html><head><meta name=viewport content="width=device-width,initial-scale=1"><title>MaybeEdgeScanner Sidecar</title><link rel=stylesheet href=/dashboard.css>
+	page := `<!doctype html><html><head><meta name=viewport content="width=device-width,initial-scale=1"><title>MaybeEdgeScanner Sidecar</title>
 <style>
 :root{color-scheme:dark;--bg:#071018;--panel:rgba(16,27,37,.82);--line:#263948;--text:#eef6fb;--muted:#8aa2b3;--accent:#32d0bd;--good:#42e6aa;--warn:#ffd166;--bad:#ff8585}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 10%,#13364a,transparent 30%),radial-gradient(circle at 90% 0,#26304d,transparent 34%),var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Arial,sans-serif}main{max-width:1280px;margin:auto;padding:22px}.top{display:flex;align-items:end;justify-content:space-between;gap:16px;flex-wrap:wrap}.tabs{display:flex;gap:8px;margin:16px 0}.tab{width:auto;border-color:#34566b;background:#0d1a25;color:#bce7f0}.tab.active{background:var(--accent);color:#04201d}.grid{display:grid;grid-template-columns:350px 1fr;gap:16px}@media(max-width:900px){.grid{grid-template-columns:1fr}}.card{background:var(--panel);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.13);border-radius:14px;padding:16px;box-shadow:0 20px 60px rgba(0,0,0,.22)}textarea,input,select,button{width:100%;border-radius:10px;border:1px solid #31495b;background:#08131d;color:#eaf5fb;padding:10px;margin:6px 0}button{background:var(--accent);color:#04201d;font-weight:800;cursor:pointer}.danger{background:#ff6b6b;color:#270506}.muted{color:var(--muted)}.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bar{height:8px;background:#263948;border-radius:20px;overflow:hidden}.fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),#8ef0d1)}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #203241;text-align:left}th{color:#8aa2b3;position:sticky;top:0;background:#101b25}.ok{color:var(--good)}.bad{color:var(--bad)}.pill{display:inline-block;padding:3px 8px;border-radius:999px;background:#142636;color:#9fc2d7;font-size:12px}.ring{width:104px;height:104px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--accent) 0deg,#263948 0deg);font-weight:900}.ring span{width:78px;height:78px;border-radius:50%;display:grid;place-items:center;background:#071018}.dash{display:grid;grid-template-columns:120px 1fr;gap:14px;align-items:center}.density-compact td,.density-compact th{padding:4px;font-size:12px}.hex{display:grid;grid-template-columns:repeat(32,1fr);gap:2px;margin-top:10px}.cell{aspect-ratio:1;background:#263948;border-radius:3px}.cell.good{background:#42e6aa}.cell.bad{background:#ff8585}.cell.mid{background:#ffd166}</style></head><body><main>
 <div class=top><div><h1>MaybeEdgeScanner Sidecar</h1><p class=muted>Live SNI/IP/CIDR scanner with progress telemetry, safety limits, and filtered data grid.</p></div><div><button onclick="document.body.classList.toggle('density-compact')">Toggle density</button></div></div>
@@ -166,33 +164,12 @@ async function start(){rows=[];document.getElementById('rows').innerHTML='';docu
 async function stop(){await fetch('/api/stop',{method:'POST'});set('Stopping')}
 function esc(x){return String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function render(r,s){rows.push(r);rows.sort((a,b)=>b.score-a.score||a.latency_ms-b.latency_ms);let pct=s.checked*100/Math.max(1,s.total);document.getElementById('fill').style.width=pct+'%';document.getElementById('ring').style.background='conic-gradient(var(--accent) '+(pct*3.6)+'deg,#263948 0deg)';document.getElementById('ringText').textContent=Math.round(pct)+'%';document.getElementById('metrics').textContent='Checked '+s.checked+'/'+s.total+' · working '+s.working+' · TLS '+s.tls_working+' · HTTP '+s.http_working+' · batch '+s.batch+'/'+s.batches;document.getElementById('rows').innerHTML=rows.slice(0,250).map(x=>'<tr title="'+esc((x.tls_version||'')+' '+(x.cert_subject||''))+'"><td>'+esc(x.target)+'</td><td>'+esc(x.ip+':'+x.port)+'</td><td>'+esc(x.sni||'--')+'</td><td><span class="'+(x.tcp?'ok':'bad')+'">TCP</span> <span class="'+(x.tls?'ok':'bad')+'">TLS</span> <span class="'+(x.http?'ok':'bad')+'">HTTP</span></td><td>'+(x.latency_ms||'')+'</td><td>'+esc(x.alpn||'--')+'</td><td><span class=pill>'+esc(x.cdn)+'</span></td></tr>').join('');document.getElementById('analyticsText').textContent='Top score '+(rows[0]?.score||0)+' · CDN groups '+new Set(rows.map(x=>x.cdn)).size;let h=document.getElementById('hex');if(h.childElementCount<1024){let c=document.createElement('div');c.className='cell '+(r.http?'good':r.tls||r.tcp?'mid':'bad');h.appendChild(c)}}
-</script><script src=/dashboard.js></script></main></body></html>`
+</script></main></body></html>`
 	data := map[string]string{
 		"Targets": strings.Join(loadLines("assets/default_edges_extra.txt"), "\n"),
 		"SNIs":    strings.Join(loadLines("assets/default_snis.txt"), "\n"),
 	}
 	_ = template.Must(template.New("index").Parse(page)).Execute(w, data)
-}
-
-func dashboardCSS(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	_, _ = w.Write([]byte(`:root{--mesh-a:#153b52;--mesh-b:#17223b;--glass:rgba(10,22,32,.72);--edge:rgba(255,255,255,.18);--accent2:#7ce7ff}body{min-height:100vh;background:radial-gradient(circle at 12% 8%,rgba(63,181,255,.26),transparent 28%),radial-gradient(circle at 85% 6%,rgba(124,231,255,.18),transparent 30%),radial-gradient(circle at 50% 100%,rgba(66,230,170,.14),transparent 38%),#071018;background-attachment:fixed}.top{position:sticky;top:0;z-index:5;padding:12px 0;background:linear-gradient(180deg,rgba(7,16,24,.94),rgba(7,16,24,.58),transparent);backdrop-filter:blur(14px)}h1{letter-spacing:.01em;margin:.1em 0}.card{position:relative;overflow:hidden}.card:before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:linear-gradient(135deg,rgba(255,255,255,.20),transparent 18%,transparent 70%,rgba(124,231,255,.10));mix-blend-mode:screen}.toolbar{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:10px 0}.toolbar button,.toolbar input{margin:0}.metricGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}.metric{border:1px solid var(--edge);background:rgba(255,255,255,.055);border-radius:12px;padding:10px}.metric strong{display:block;font-size:20px;color:white}.tableWrap{max-height:62vh;overflow:auto;border:1px solid #203241;border-radius:12px}.stage{display:inline-flex;gap:4px;align-items:center;padding:3px 7px;border-radius:999px;background:#132838;margin:1px}.stage.on{color:#041d19;background:linear-gradient(135deg,var(--good),#8ef0d1);font-weight:800}.spark{font-family:ui-monospace,Consolas,monospace;color:var(--accent2);letter-spacing:1px}.empty{display:grid;place-items:center;min-height:220px;text-align:center;color:var(--muted)}.empty:before{content:"◇";display:block;color:var(--accent);font-size:54px}.density-compact main{max-width:1560px}.density-compact textarea{rows:6}.density-compact .card{padding:10px;border-radius:10px}.density-compact td,.density-compact th{padding:3px 5px;font-size:12px}@media(max-width:760px){main{padding:12px}.toolbar,.metricGrid{grid-template-columns:1fr 1fr}.dash{grid-template-columns:1fr}.ring{margin:auto}}`))
-}
-
-func dashboardJS(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-	_, _ = w.Write([]byte(`(function(){
-function byId(id){return document.getElementById(id)}
-function esc(x){return String(x==null?'':x).replace(/[&<>"']/g,function(m){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]})}
-function csv(rows){return ['target,ip,port,sni,tcp,tls,http,http3_hint,latency_ms,alpn,tls_fingerprint,alt_svc,cdn,score'].concat(rows.map(function(r){return [r.target,r.ip,r.port,r.sni,r.tcp,r.tls,r.http,r.http3_hint,r.latency_ms,r.alpn,r.tls_fingerprint,r.alt_svc,r.cdn,r.score].map(function(x){return '"'+String(x==null?'':x).replace(/"/g,'""')+'"'}).join(',')})).join('\n')}
-function spark(r){return [r.tcp_latency_ms,r.tls_latency_ms,r.http_latency_ms].map(function(v){return !v?'-':v<120?'_':v<300?':':v<700?'|':'#'}).join('')}
-function updateMetrics(){var rows=window.__uiRows||[];var cdn=new Set(rows.map(function(x){return x.cdn}));var best=rows.reduce(function(m,x){return Math.max(m,+x.score||0)},0);if(byId('mWorking'))byId('mWorking').textContent=rows.filter(function(x){return x.tcp||x.tls||x.http}).length;if(byId('mHttp'))byId('mHttp').textContent=rows.filter(function(x){return x.http}).length;if(byId('mH3'))byId('mH3').textContent=rows.filter(function(x){return x.http3_hint}).length;if(byId('mScore'))byId('mScore').textContent=Math.round(best);if(byId('mCdn'))byId('mCdn').textContent=cdn.size}
-function updateProgress(r,s){if(!s)return;var pct=s.checked*100/Math.max(1,s.total);if(byId('fill'))byId('fill').style.width=pct+'%';if(byId('ring'))byId('ring').style.background='conic-gradient(var(--accent) '+(pct*3.6)+'deg,#263948 0deg)';if(byId('ringText'))byId('ringText').textContent=Math.round(pct)+'%';if(byId('metrics'))byId('metrics').textContent='Checked '+s.checked+'/'+s.total+' - working '+s.working+' - TLS '+s.tls_working+' - HTTP '+s.http_working+' - batch '+s.batch+'/'+s.batches;if(byId('analyticsText'))byId('analyticsText').textContent='Top score '+((window.__uiRows||[])[0]?.score||0)+' - CDN groups '+new Set((window.__uiRows||[]).map(function(x){return x.cdn})).size;var h=byId('hex');if(h&&h.childElementCount<1024){var c=document.createElement('div');c.className='cell '+(r.http?'good':r.tls||r.tcp?'mid':'bad');h.appendChild(c)}}
-window.rerender=function(){var body=byId('rows');if(!body)return;var q=((byId('uiFilter')||{}).value||'').toLowerCase();var rows=(window.__uiRows||[]).filter(function(x){return (x.ip+' '+x.sni+' '+x.cdn+' '+x.alpn+' '+x.tls_fingerprint+' '+x.alt_svc+' '+(x.http3_hint?'http3 h3':'')).toLowerCase().indexOf(q)>=0});body.innerHTML=rows.length?rows.slice(0,300).map(function(x){return '<tr title="'+esc((x.tls_version||'')+' '+(x.cert_subject||'')+' '+(x.alt_svc||''))+'"><td>'+esc(x.target)+'</td><td>'+esc(x.ip+':'+x.port)+'</td><td>'+esc(x.sni||'--')+'</td><td><span class="stage '+(x.tcp?'on':'')+'">TCP</span><span class="stage '+(x.tls?'on':'')+'">TLS</span><span class="stage '+(x.http?'on':'')+'">HTTP</span><span class="stage '+(x.http3_hint?'on':'')+'">H3</span></td><td><span class=spark>'+spark(x)+'</span> '+(x.latency_ms||'')+'</td><td>'+esc((x.alpn||'--')+'/'+(x.tls_fingerprint||'--')+(x.http3_hint?' / h3':''))+'</td><td><span class=pill>'+esc(x.cdn)+'</span></td></tr>'}).join(''):'<tr><td colspan=7><div class=empty>No matching rows</div></td></tr>';updateMetrics()}
-function ready(){var scan=byId('tab-scan');if(!scan||byId('uiToolbar'))return;var toolbar=document.createElement('div');toolbar.id='uiToolbar';toolbar.className='toolbar';toolbar.innerHTML='<input id="uiFilter" placeholder="Filter IP, SNI, CDN, ALPN, H3"><button id="uiCopy">Copy CSV</button><button id="uiJson">Copy JSON</button><button id="uiClear">Clear view</button>';scan.insertBefore(toolbar,scan.children[1]);var metrics=document.createElement('div');metrics.className='metricGrid';metrics.innerHTML='<div class=metric><span>Working</span><strong id=mWorking>0</strong></div><div class=metric><span>HTTP</span><strong id=mHttp>0</strong></div><div class=metric><span>HTTP/3 hint</span><strong id=mH3>0</strong></div><div class=metric><span>Best score</span><strong id=mScore>0</strong></div><div class=metric><span>CDNs</span><strong id=mCdn>0</strong></div>';scan.insertBefore(metrics,toolbar.nextSibling);var table=document.querySelector('table');if(table){var wrap=document.createElement('div');wrap.className='tableWrap';table.parentNode.insertBefore(wrap,table);wrap.appendChild(table)}byId('uiCopy').onclick=function(){navigator.clipboard&&navigator.clipboard.writeText(csv(window.__uiRows||[]))};byId('uiJson').onclick=function(){navigator.clipboard&&navigator.clipboard.writeText(JSON.stringify(window.__uiRows||[],null,2))};byId('uiClear').onclick=function(){window.__uiRows=[];byId('rows').innerHTML='<tr><td colspan=7><div class=empty>Waiting for scan results</div></td></tr>';updateMetrics()};byId('uiFilter').oninput=window.rerender;window.rerender()}
-var oldStart=window.start;if(oldStart){window.start=function(){window.__uiRows=[];return oldStart.apply(this,arguments)}}
-window.render=function(r,s){window.__uiRows=window.__uiRows||[];if(s&&s.checked<=1)window.__uiRows=[];window.__uiRows.push(r);window.__uiRows.sort(function(a,b){return ((+b.score||0)-(+a.score||0))||((+a.latency_ms||999999)-(+b.latency_ms||999999))});updateProgress(r,s);window.rerender()};document.addEventListener('DOMContentLoaded',ready);ready()
-})();`))
 }
 
 func grafanaDashboard(w http.ResponseWriter, _ *http.Request) {
@@ -265,6 +242,9 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	var down atomic.Int64
 
 	limiter := newRateLimiter(req.RatePerSecond)
+	if limiter != nil {
+		defer limiter.Stop()
+	}
 	for start, batchNo := 0, 1; start < len(targets) && ctx.Err() == nil; start, batchNo = start+req.BatchSize, batchNo+1 {
 		end := min(len(targets), start+req.BatchSize)
 		jobs := make(chan string)
@@ -346,6 +326,52 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = enc.Encode(map[string]any{"type": "done", "stopped": ctx.Err() != nil})
 	flush(flusher)
+}
+
+func scanDNS(w http.ResponseWriter, r *http.Request) {
+	metricDNSRuns.Add(1)
+	var hosts []string
+	if r.Method == http.MethodGet {
+		hosts = unique(strings.FieldsFunc(r.URL.Query().Get("host"), func(ch rune) bool {
+			return ch == ',' || ch == ';' || ch == '\n' || ch == '\r' || ch == '\t' || ch == ' '
+		}))
+	} else if r.Method == http.MethodPost {
+		var req scanRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		req.normalize()
+		hosts = req.Targets
+	} else {
+		http.Error(w, "GET or POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if len(hosts) > 500 {
+		hosts = hosts[:500]
+	}
+	type dnsRow struct {
+		Host      string   `json:"host"`
+		Addresses []string `json:"addresses"`
+		Error     string   `json:"error,omitempty"`
+	}
+	rows := make([]dnsRow, 0, len(hosts))
+	for _, host := range hosts {
+		row := dnsRow{Host: host}
+		if net.ParseIP(host) != nil {
+			row.Addresses = []string{host}
+		} else if ips, err := net.LookupIP(host); err != nil {
+			row.Error = err.Error()
+		} else {
+			for _, ip := range ips {
+				row.Addresses = append(row.Addresses, ip.String())
+			}
+			row.Addresses = unique(row.Addresses)
+		}
+		rows = append(rows, row)
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(rows), "results": rows})
 }
 
 func metrics(w http.ResponseWriter, _ *http.Request) {
@@ -830,6 +856,9 @@ func expandOne(s string, remaining int, respectSafety bool) []string {
 	if remaining <= 0 || s == "" {
 		return nil
 	}
+	if strings.Contains(s, "-") && !strings.Contains(s, "/") {
+		return expandRange(s, remaining, respectSafety)
+	}
 	if !strings.Contains(s, "/") {
 		if respectSafety && isReservedOrUnsafe(s) {
 			return nil
@@ -862,6 +891,34 @@ func expandOne(s string, remaining int, respectSafety bool) []string {
 			metricSafetySkipped.Add(1)
 		}
 		current = current.Next()
+	}
+	return out
+}
+
+func expandRange(s string, remaining int, respectSafety bool) []string {
+	parts := strings.SplitN(s, "-", 2)
+	if len(parts) != 2 || remaining <= 0 {
+		return nil
+	}
+	start, err := netip.ParseAddr(strings.TrimSpace(parts[0]))
+	if err != nil || !start.Is4() {
+		return nil
+	}
+	end, err := netip.ParseAddr(strings.TrimSpace(parts[1]))
+	if err != nil || !end.Is4() {
+		return nil
+	}
+	if start.Compare(end) > 0 {
+		return nil
+	}
+	var out []string
+	for current := start; current.IsValid() && current.Compare(end) <= 0 && len(out) < remaining; current = current.Next() {
+		text := current.String()
+		if !respectSafety || !isReservedOrUnsafe(text) {
+			out = append(out, text)
+		} else {
+			metricSafetySkipped.Add(1)
+		}
 	}
 	return out
 }
@@ -991,7 +1048,7 @@ func shuffleStrings(xs []string) {
 	r.Shuffle(len(xs), func(i, j int) { xs[i], xs[j] = xs[j], xs[i] })
 }
 
-func newRateLimiter(rate int) <-chan time.Time {
+func newRateLimiter(rate int) *time.Ticker {
 	if rate <= 0 {
 		return nil
 	}
@@ -999,15 +1056,15 @@ func newRateLimiter(rate int) <-chan time.Time {
 	if interval <= 0 {
 		interval = time.Nanosecond
 	}
-	return time.Tick(interval)
+	return time.NewTicker(interval)
 }
 
-func waitRate(ctx context.Context, limiter <-chan time.Time, jitterMS int) {
+func waitRate(ctx context.Context, limiter *time.Ticker, jitterMS int) {
 	if limiter != nil {
 		select {
 		case <-ctx.Done():
 			return
-		case <-limiter:
+		case <-limiter.C:
 		}
 	}
 	if jitterMS > 0 {

@@ -65,8 +65,6 @@ jobs:
   android:
     runs-on: ubuntu-latest
     needs: go-sidecar
-    env:
-      HAS_RELEASE_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v5
@@ -76,19 +74,32 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.14.2"
-      - name: Configure release signing
-        if: env.HAS_RELEASE_KEYSTORE == 'true'
+      - name: Validate release signing secrets
+        if: github.event_name != 'pull_request'
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
-          test -n "$RELEASE_KEYSTORE_PASSWORD"
-          test -n "$RELEASE_KEY_ALIAS"
-          test -n "$RELEASE_KEY_PASSWORD"
+          missing=0
+          for name in RELEASE_KEYSTORE_BASE64 RELEASE_KEYSTORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error title=Missing GitHub Actions secret::$name is not available to this workflow. Add it under repository Settings > Secrets and variables > Actions."
+              missing=1
+            fi
+          done
+          exit "$missing"
+      - name: Configure release signing
+        if: github.event_name != 'pull_request'
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
           mkdir -p .signing
-          echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > .signing/release.p12
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 -d > .signing/release.p12
           {
             echo "STORE_FILE=.signing/release.p12"
             echo "STORE_PASSWORD=$RELEASE_KEYSTORE_PASSWORD"
@@ -106,15 +117,22 @@ jobs:
       - name: Verify release APK signing
         if: github.event_name != 'pull_request'
         run: |
-          APK="$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)"
-          test -n "$APK"
-          "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)/apksigner" verify --verbose --print-certs "$APK"
+          mapfile -t APKS < <(find app/build/outputs/apk -path '*/release/*.apk' | sort)
+          if [ "${#APKS[@]}" -eq 0 ]; then
+            echo "No release APKs found" >&2
+            exit 1
+          fi
+          APKSIGNER="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)/apksigner"
+          for APK in "${APKS[@]}"; do
+            echo "Verifying $APK"
+            "$APKSIGNER" verify --verbose --print-certs "$APK"
+          done
       - name: Upload APK artifacts
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: maybeedgescanner-apks
-          path: app/build/outputs/apk/release/*.apk
+          path: app/build/outputs/apk/**/release/*.apk
 
   dependency-container:
     name: Publish dependency container
