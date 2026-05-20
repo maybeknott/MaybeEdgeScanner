@@ -66,7 +66,7 @@ public class MainActivity extends Activity {
             "preferred_network_mode1",
             "preferred_network_mode2"
     };
-    private static final int PREVIEW_TARGET_LIMIT = 24;
+    private static final int PREVIEW_TARGET_LIMIT = 12;
     private static final int MAX_RENDERED_CARDS = 250;
     private static final int MAX_THREADS = 128;
     private static final int MAX_BATCH = 20000;
@@ -85,6 +85,7 @@ public class MainActivity extends Activity {
     private final LinkedHashSet<String> selectedSourceSnis = new LinkedHashSet<>();
     private final ArrayDeque<String> logLines = new ArrayDeque<>();
     private final StringBuilder stableLogBuilder = new StringBuilder();
+    private final ExecutorService previewExecutor = Executors.newSingleThreadExecutor();
     private ExecutorService executor;
     private boolean suppressUiRefresh;
     private String cachedResourceLine = "battery n/a | heap 0MB";
@@ -249,12 +250,22 @@ public class MainActivity extends Activity {
         providerPanel.addView(sourceControl(otherCdnSourceEnabled, otherCdnSampleInput, "Provider corpus for GitHub Pages, Azure Front Door, Google CDN, Bunny, Edgio, and other cloud/CDN ranges."));
         targetTab.addView(collapsibleBox("Managed source sampling", providerPanel, true));
 
-        sourceSummaryView = glassText("Managed sources are driven directly by the checkboxes above. There is no hidden staging list or add/replace state.");
-        targetTab.addView(sourceSummaryView);
-        sourceHealthView = glassText("Source health will summarize managed corpora, custom additions, SNI routes, expansion size, and phone-load posture before scanning.");
-        targetTab.addView(sourceHealthView);
-        scanPlanView = glassText("Scan plan will combine managed sources, custom entries, SNI routes, ports, workflow, and caps before scanning.");
-        targetTab.addView(scanPlanView);
+        // Modernized Unified Configuration Dashboard Container
+        LinearLayout metricsDashboardCard = column();
+        metricsDashboardCard.setBackground(glassBg(PANEL, Color.argb(120, 255, 255, 255)));
+        metricsDashboardCard.setPadding(dp(12), dp(12), dp(12), dp(12));
+        setOuterMargin(metricsDashboardCard, 0, dp(6), 0, dp(8));
+
+        sourceSummaryView = text("Managed sources: initializing", 12, Color.rgb(196, 223, 235), false);
+        sourceHealthView = text("Source health: checking", 11, Color.rgb(160, 195, 215), false);
+        scanPlanView = text("Scan plan: mapping", 11, Color.WHITE, false);
+        scanPlanView.setTypeface(Typeface.MONOSPACE);
+
+        metricsDashboardCard.addView(text("Pre-Flight Invalidation Metrics", 13, BLUE, true));
+        metricsDashboardCard.addView(sourceSummaryView);
+        metricsDashboardCard.addView(sourceHealthView);
+        metricsDashboardCard.addView(scanPlanView);
+        targetTab.addView(metricsDashboardCard);
         targetTab.addView(section("Targets"));
         targetTab.addView(quietNote("Custom targets are for manual additions/removals only. Selected corpora and sampled IPs stay summarized in managed sources instead of being dumped into this text box."));
         customTargetSampleInput = input("0", true);
@@ -794,8 +805,12 @@ public class MainActivity extends Activity {
     }
 
     private void clearManagedSources() {
-        selectedSourceTargets.clear();
-        selectedSourceSnis.clear();
+        synchronized (selectedSourceTargets) {
+            selectedSourceTargets.clear();
+        }
+        synchronized (selectedSourceSnis) {
+            selectedSourceSnis.clear();
+        }
         if (communitySourceEnabled != null) communitySourceEnabled.setChecked(false);
         if (akamaiSourceEnabled != null) akamaiSourceEnabled.setChecked(false);
         if (cloudfrontSourceEnabled != null) cloudfrontSourceEnabled.setChecked(false);
@@ -869,91 +884,126 @@ public class MainActivity extends Activity {
 
     private void renderTokenPreviews() {
         if (targetChipPreview == null || sniChipPreview == null || targetsInput == null || snisInput == null) return;
-        rebuildManagedSources();
-        List<String> targetTokens = combinedTargetTokens();
-        int targetCap = Math.max(1, intValue(totalInput, 72000));
-        int estimatedTargets = estimateExpandedTargetCount(targetTokens, 200000);
-        List<String> previewTargets = previewExpandedTargets(targetTokens, Math.min(targetCap, PREVIEW_TARGET_LIMIT));
-        renderChips(targetChipPreview, "Source preview (" + selectedSourceTargets.size() + " managed tokens + " + sampledCustomTargets().size() + " custom -> " + Math.min(estimatedTargets, targetCap) + " endpoints, " + previewTargets.size() + " previewed)", previewTargets, true);
-        if (sniPairingEnabled()) renderChips(sniChipPreview, "SNI routes (" + selectedSourceSnis.size() + " default + " + sampledCustomSnis().size() + " custom)", combinedSniTokens(), false);
-        else renderChips(sniChipPreview, "SNI pairing disabled", Collections.emptyList(), false);
-        updateSourceHealth(targetTokens, estimatedTargets, targetCap);
-        updateScanPlanPreview();
+        
+        final String rawTargetsText = targetsInput.getText().toString();
+        final String rawSnisText = snisInput.getText().toString();
+        final int targetCap = Math.max(1, intValue(totalInput, 72000));
+        
+        final boolean defaultSni = checked(defaultSniEnabled);
+        final boolean community = checked(communitySourceEnabled);
+        final int communityCount = intValue(communitySampleInput, 0);
+        final boolean akamai = checked(akamaiSourceEnabled);
+        final int akamaiCount = intValue(akamaiSampleInput, 0);
+        final boolean cloudfront = checked(cloudfrontSourceEnabled);
+        final int cloudfrontCount = intValue(cloudfrontSampleInput, 0);
+        final boolean fastly = checked(fastlySourceEnabled);
+        final int fastlyCount = intValue(fastlySampleInput, 0);
+        final boolean cloudflare = checked(cloudflareSourceEnabled);
+        final int cloudflareCount = intValue(cloudflareSampleInput, 0);
+        final boolean otherCdn = checked(otherCdnSourceEnabled);
+        final int otherCdnCount = intValue(otherCdnSampleInput, 0);
+        
+        final int threads = clampInt(intValue(threadsInput, 32), 1, MAX_THREADS);
+        final int batch = clampInt(intValue(batchInput, 2000), 1, MAX_BATCH);
+        final int timeout = clampInt(intValue(timeoutInput, 3000), 250, 15000);
+        final String pathText = pathInput == null ? "/" : pathInput.getText().toString();
+        final String tlsMode = tlsModeSpinner == null ? "Android default" : String.valueOf(tlsModeSpinner.getSelectedItem());
+        final List<Integer> profiles = selectedWorkflowProfiles();
+        final boolean allSni = sniPairingEnabled() && multiSni != null && multiSni.isChecked();
+        final String portsText = portsInput == null ? "443" : portsInput.getText().toString();
+        
+        previewExecutor.execute(() -> {
+            rebuildManagedSourcesBg(defaultSni, community, communityCount, akamai, akamaiCount, cloudfront, cloudfrontCount, fastly, fastlyCount, cloudflare, cloudflareCount, otherCdn, otherCdnCount);
+            
+            final List<String> targetTokens = combinedTargetTokens(rawTargetsText);
+            final int estimatedTargets = estimateExpandedTargetCount(targetTokens, 200000);
+            final List<String> previewTargets = previewExpandedTargets(targetTokens, Math.min(targetCap, PREVIEW_TARGET_LIMIT));
+            
+            final boolean sniPairing = sniPairingEnabled();
+            final List<String> combinedSniTokens = sniPairing ? combinedSniTokens(rawSnisText) : Collections.emptyList();
+            
+            final String summaryText = getSummaryText(defaultSni, community, akamai, cloudfront, fastly, cloudflare, otherCdn);
+            final String healthText = getHealthText(rawTargetsText, rawSnisText, targetTokens, estimatedTargets, targetCap, threads, batch, allSni);
+            final String planText = getPlanText(rawTargetsText, rawSnisText, targetTokens, targetCap, batch, threads, timeout, pathText, tlsMode, profiles, allSni, portsText);
+            
+            ui.post(() -> {
+                if (targetChipPreview == null || sniChipPreview == null) return;
+                
+                int managedSize;
+                int customSize;
+                synchronized (selectedSourceTargets) {
+                    managedSize = selectedSourceTargets.size();
+                    customSize = sampleSource(lines(rawTargetsText), customTargetSampleInput == null ? 0 : intValue(customTargetSampleInput, 0)).size();
+                }
+                
+                renderChips(targetChipPreview, "Source preview (" + managedSize + " managed tokens + " + customSize + " custom -> " + Math.min(estimatedTargets, targetCap) + " endpoints, " + previewTargets.size() + " previewed)", previewTargets, true);
+                
+                if (sniPairing) {
+                    int managedSnis;
+                    int customSnis;
+                    synchronized (selectedSourceSnis) {
+                        managedSnis = selectedSourceSnis.size();
+                        customSnis = sampleSource(lines(rawSnisText), customSniSampleInput == null ? 0 : intValue(customSniSampleInput, 0)).size();
+                    }
+                    renderChips(sniChipPreview, "SNI routes (" + managedSnis + " default + " + customSnis + " custom)", combinedSniTokens, false);
+                } else {
+                    renderChips(sniChipPreview, "SNI pairing disabled", Collections.emptyList(), false);
+                }
+                
+                if (sourceSummaryView != null) sourceSummaryView.setText(summaryText);
+                if (sourceHealthView != null) sourceHealthView.setText(healthText);
+                if (scanPlanView != null) scanPlanView.setText(planText);
+            });
+        });
     }
 
-    private void updateSourceHealth(List<String> targetTokens, int estimatedTargets, int targetCap) {
-        if (sourceHealthView == null || targetsInput == null || snisInput == null) return;
-        int customTargets = lines(targetsInput.getText().toString()).size();
-        int managedTargets = selectedSourceTargets.size();
-        int customRoutes = lines(snisInput.getText().toString()).size();
-        int cappedTargets = Math.min(estimatedTargets, targetCap);
-        String composition = targetTokens.isEmpty()
-                ? "No target sources selected yet."
-                : managedTargets + " managed target tokens + " + customTargets + " custom target tokens, deduped before expansion.";
-        String routeScope = sniPairingEnabled()
-                ? selectedSourceSnis.size() + " managed SNI routes + " + customRoutes + " custom SNI routes; route mode is " + ((multiSni != null && multiSni.isChecked()) ? "all SNI hosts." : "primary SNI first.")
-                : "IP-only scope; SNI/host names are extracted from TLS and HTTP results, not paired as scan input.";
-        sourceHealthView.setText("Source health\n" +
-                composition + "\n" +
-                "Expanded estimate: " + estimatedTargets + " endpoints; Total cap keeps " + cappedTargets + " for this run.\n" +
-                routeScope + "\n" +
-                sourceLoadPosture(estimatedTargets, targetCap));
-    }
+    private void updateSourceHealth(List<String> targetTokens, int estimatedTargets, int targetCap) {}
 
     private String sourceLoadPosture(int estimatedTargets, int targetCap) {
-        int threads = clampInt(intValue(threadsInput, 32), 1, MAX_THREADS);
-        int batch = clampInt(intValue(batchInput, 2000), 1, MAX_BATCH);
-        int capped = Math.min(estimatedTargets, targetCap);
-        if (capped == 0) return "Posture: idle; add or select IP targets before scanning.";
-        if (capped > 12000 || threads > 64 || batch > 8000) return "Posture: wide/high-load; better for plugged-in devices or the sidecar.";
-        if (capped < 500 || threads <= 16) return "Posture: light route validation; good for tuning SNI choices and unstable mobile links.";
-        return "Posture: balanced phone scan; suitable for normal interactive use.";
+        return sourceLoadPostureBg(estimatedTargets, targetCap, 32, 2000);
     }
 
     private List<String> combinedTargetTokens() {
-        LinkedHashSet<String> merged = new LinkedHashSet<>(selectedSourceTargets);
-        merged.addAll(sampledCustomTargets());
-        return new ArrayList<>(merged);
+        return combinedTargetTokens(targetsInput == null ? "" : targetsInput.getText().toString());
+    }
+
+    private List<String> combinedTargetTokens(String customTargetsText) {
+        synchronized (selectedSourceTargets) {
+            LinkedHashSet<String> merged = new LinkedHashSet<>(selectedSourceTargets);
+            merged.addAll(sampledCustomTargets(customTargetsText));
+            return new ArrayList<>(merged);
+        }
     }
 
     private List<String> combinedSniTokens() {
-        LinkedHashSet<String> merged = new LinkedHashSet<>(selectedSourceSnis);
-        merged.addAll(sampledCustomSnis());
-        return new ArrayList<>(merged);
+        return combinedSniTokens(snisInput == null ? "" : snisInput.getText().toString());
+    }
+
+    private List<String> combinedSniTokens(String customSnisText) {
+        synchronized (selectedSourceSnis) {
+            LinkedHashSet<String> merged = new LinkedHashSet<>(selectedSourceSnis);
+            merged.addAll(sampledCustomSnis(customSnisText));
+            return new ArrayList<>(merged);
+        }
     }
 
     private LinkedHashSet<String> sampledCustomTargets() {
-        return sampleSource(lines(targetsInput == null ? "" : targetsInput.getText().toString()), customTargetSampleInput == null ? 0 : intValue(customTargetSampleInput, 0));
+        return sampledCustomTargets(targetsInput == null ? "" : targetsInput.getText().toString());
+    }
+
+    private LinkedHashSet<String> sampledCustomTargets(String customTargetsText) {
+        return sampleSource(lines(customTargetsText), customTargetSampleInput == null ? 0 : intValue(customTargetSampleInput, 0));
     }
 
     private LinkedHashSet<String> sampledCustomSnis() {
-        return sampleSource(lines(snisInput == null ? "" : snisInput.getText().toString()), customSniSampleInput == null ? 0 : intValue(customSniSampleInput, 0));
+        return sampledCustomSnis(snisInput == null ? "" : snisInput.getText().toString());
     }
 
-    private void updateScanPlanPreview() {
-        if (scanPlanView == null || targetsInput == null || snisInput == null || portsInput == null || totalInput == null) return;
-        List<String> rawTargets = combinedTargetTokens();
-        int cap = Math.max(1, intValue(totalInput, 72000));
-        int estimatedTargets = estimateExpandedTargetCount(rawTargets, 200000);
-        int cappedTargets = Math.min(estimatedTargets, cap);
-        int sniCount = sniPairingEnabled() ? Math.max(1, combinedSniTokens().size()) : 1;
-        List<Integer> ports = parsePorts(portsInput.getText().toString());
-        List<Integer> profiles = selectedWorkflowProfiles();
-        boolean allSni = sniPairingEnabled() && multiSni != null && multiSni.isChecked();
-        int units = estimateAttemptUnits(cappedTargets, sniCount, ports.size(), profiles, allSni);
-        int batch = clampInt(intValue(batchInput, 2000), 1, MAX_BATCH);
-        int threads = clampInt(intValue(threadsInput, 32), 1, MAX_THREADS);
-        int timeout = clampInt(intValue(timeoutInput, 3000), 250, 15000);
-        String path = pathInput == null ? "/" : pathInput.getText().toString().trim();
-        if (path.isEmpty()) path = "/";
-        if (!path.startsWith("/")) path = "/" + path;
-        scanPlanView.setText("Scan plan\n" +
-                selectedSourceTargets.size() + " managed source tokens + " + lines(targetsInput.getText().toString()).size() + " custom tokens -> " + estimatedTargets + " estimated endpoints -> " + cappedTargets + " after Total cap " + cap + "\n" +
-                (sniPairingEnabled() ? sniCount + " SNI host" + (sniCount == 1 ? "" : "s") + " kept separate for TLS/Host routing; " : "IP-only TLS/HTTP probing; ") + "ports " + ports + "\n" +
-                "Runtime: batch " + batch + ", threads " + threads + ", timeout " + timeout + "ms, HTTP path " + path + "\n" +
-                "TLS ClientHello mode: " + (tlsModeSpinner == null ? "Android default" : tlsModeSpinner.getSelectedItem()) + "\n" +
-                workflowLabels(profiles) + " -> " + (profiles.isEmpty() ? "select at least one manual step." : "about " + units + " probe units. Preset overlaps are deduped, not overridden."));
+    private LinkedHashSet<String> sampledCustomSnis(String customSnisText) {
+        return sampleSource(lines(customSnisText), customSniSampleInput == null ? 0 : intValue(customSniSampleInput, 0));
     }
+
+    private void updateScanPlanPreview() {}
 
     private int estimateAttemptUnits(int targets, int snis, int ports, List<Integer> profiles, boolean allSni) {
         long units = 0;
@@ -989,7 +1039,7 @@ public class MainActivity extends Activity {
         int valid = 0;
         for (String value : values) if (targets ? validTargetToken(value) : validDomainToken(value)) valid++;
         panel.addView(text(title + ": " + valid + "/" + values.size() + " ready", 11, MUTED, true));
-        int shown = Math.min(values.size(), 8);
+        int shown = Math.min(values.size(), 12);
         LinearLayout row = null;
         for (int i = 0; i < shown; i++) {
             if (i % 2 == 0) {
@@ -1191,62 +1241,199 @@ public class MainActivity extends Activity {
     }
 
     private void rebuildManagedSources() {
-        selectedSourceTargets.clear();
-        selectedSourceSnis.clear();
-        ArrayList<String> enabled = new ArrayList<>();
-        if (checked(defaultSniEnabled)) {
-            selectedSourceSnis.addAll(loadAsset("default_snis.txt"));
-            selectedSourceSnis.addAll(loadAsset("scan-corpora/maybepsiphon-sni-hosts.txt"));
-        }
-        if (checked(communitySourceEnabled)) {
-            int count = intValue(communitySampleInput, 0);
-            selectedSourceTargets.addAll(sampleSource(loadAsset("default_targets.txt"), count));
-            selectedSourceTargets.addAll(sampleSource(loadAsset("default_edges_extra.txt"), count));
-            selectedSourceTargets.addAll(sampleSource(communityEdgeCorpus("scan-corpora/maybepsiphon-edge-ips.txt", "scan-corpora/community-edge-cidrs-24.txt"), count));
-            enabled.add("Community");
-        }
-        if (checked(akamaiSourceEnabled)) {
-            int count = intValue(akamaiSampleInput, 0);
-            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/akamai-AS20940.json"), count));
-            selectedSourceTargets.addAll(sampleSource(loadAsset("scan-corpora/akamai-hosts-184x.txt"), count));
-            addRelevantSni(selectedSourceSnis, "akamai");
-            enabled.add("Akamai");
-        }
-        if (checked(cloudfrontSourceEnabled)) {
-            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/aws-cloudfront-ranges.txt"), intValue(cloudfrontSampleInput, 0)));
-            addRelevantSni(selectedSourceSnis, "aws");
-            addRelevantSni(selectedSourceSnis, "cloudfront");
-            enabled.add("CloudFront");
-        }
-        if (checked(fastlySourceEnabled)) {
-            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/fastly-AS54113.json"), intValue(fastlySampleInput, 0)));
-            addRelevantSni(selectedSourceSnis, "fastly");
-            enabled.add("Fastly");
-        }
-        if (checked(cloudflareSourceEnabled)) {
-            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/cloudflare-ranges.txt"), intValue(cloudflareSampleInput, 0)));
-            addRelevantSni(selectedSourceSnis, "cloudflare");
-            enabled.add("Cloudflare");
-        }
-        if (checked(otherCdnSourceEnabled)) {
-            int count = intValue(otherCdnSampleInput, 0);
-            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/github-pages-ranges.txt"), count));
-            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/azure-frontdoor-ranges.txt"), count));
-            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/google-cdn-ranges.txt"), count));
-            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/bunny-ranges.txt"), count));
-            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/stackpath-edgio-ranges.txt"), count));
-            selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/other-cloud-ranges.txt"), count));
-            addRelevantSni(selectedSourceSnis, "cloudflare");
-            addRelevantSni(selectedSourceSnis, "mapbox");
-            enabled.add("Other providers");
-        }
+        rebuildManagedSourcesBg(
+            checked(defaultSniEnabled),
+            checked(communitySourceEnabled), intValue(communitySampleInput, 0),
+            checked(akamaiSourceEnabled), intValue(akamaiSampleInput, 0),
+            checked(cloudfrontSourceEnabled), intValue(cloudfrontSampleInput, 0),
+            checked(fastlySourceEnabled), intValue(fastlySampleInput, 0),
+            checked(cloudflareSourceEnabled), intValue(cloudflareSampleInput, 0),
+            checked(otherCdnSourceEnabled), intValue(otherCdnSampleInput, 0)
+        );
         if (sourceSummaryView != null) {
-            int estimated = estimateExpandedTargetCount(new ArrayList<>(selectedSourceTargets), 200000);
-            sourceSummaryView.setText("Managed sources\n" +
-                    (enabled.isEmpty() ? "No target corpus enabled" : joinComma(enabled)) + "\n" +
-                    selectedSourceTargets.size() + " target tokens -> about " + estimated + " expanded endpoints before Total cap.\n" +
-                    selectedSourceSnis.size() + " default/provider SNI routes " + (checked(defaultSniEnabled) ? "enabled" : "disabled") + "; custom typed targets and SNIs are sampled separately.");
+            sourceSummaryView.setText(getSummaryText(
+                checked(defaultSniEnabled),
+                checked(communitySourceEnabled),
+                checked(akamaiSourceEnabled),
+                checked(cloudfrontSourceEnabled),
+                checked(fastlySourceEnabled),
+                checked(cloudflareSourceEnabled),
+                checked(otherCdnSourceEnabled)
+            ));
         }
+    }
+
+    private void rebuildManagedSourcesBg(
+            boolean defaultSni,
+            boolean community, int communityCount,
+            boolean akamai, int akamaiCount,
+            boolean cloudfront, int cloudfrontCount,
+            boolean fastly, int fastlyCount,
+            boolean cloudflare, int cloudflareCount,
+            boolean otherCdn, int otherCdnCount) {
+        synchronized (selectedSourceTargets) {
+            selectedSourceTargets.clear();
+        }
+        synchronized (selectedSourceSnis) {
+            selectedSourceSnis.clear();
+        }
+        if (defaultSni) {
+            synchronized (selectedSourceSnis) {
+                selectedSourceSnis.addAll(loadAsset("default_snis.txt"));
+                selectedSourceSnis.addAll(loadAsset("scan-corpora/maybepsiphon-sni-hosts.txt"));
+            }
+        }
+        if (community) {
+            synchronized (selectedSourceTargets) {
+                selectedSourceTargets.addAll(sampleSource(loadAsset("default_targets.txt"), communityCount));
+                selectedSourceTargets.addAll(sampleSource(loadAsset("default_edges_extra.txt"), communityCount));
+                selectedSourceTargets.addAll(sampleSource(communityEdgeCorpus("scan-corpora/maybepsiphon-edge-ips.txt", "scan-corpora/community-edge-cidrs-24.txt"), communityCount));
+            }
+        }
+        if (akamai) {
+            synchronized (selectedSourceTargets) {
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/akamai-AS20940.json"), akamaiCount));
+                selectedSourceTargets.addAll(sampleSource(loadAsset("scan-corpora/akamai-hosts-184x.txt"), akamaiCount));
+            }
+            synchronized (selectedSourceSnis) {
+                addRelevantSni(selectedSourceSnis, "akamai");
+            }
+        }
+        if (cloudfront) {
+            synchronized (selectedSourceTargets) {
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/aws-cloudfront-ranges.txt"), cloudfrontCount));
+            }
+            synchronized (selectedSourceSnis) {
+                addRelevantSni(selectedSourceSnis, "aws");
+                addRelevantSni(selectedSourceSnis, "cloudfront");
+            }
+        }
+        if (fastly) {
+            synchronized (selectedSourceTargets) {
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/fastly-AS54113.json"), fastlyCount));
+            }
+            synchronized (selectedSourceSnis) {
+                addRelevantSni(selectedSourceSnis, "fastly");
+            }
+        }
+        if (cloudflare) {
+            synchronized (selectedSourceTargets) {
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/cloudflare-ranges.txt"), cloudflareCount));
+            }
+            synchronized (selectedSourceSnis) {
+                addRelevantSni(selectedSourceSnis, "cloudflare");
+            }
+        }
+        if (otherCdn) {
+            synchronized (selectedSourceTargets) {
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/github-pages-ranges.txt"), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/azure-frontdoor-ranges.txt"), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/google-cdn-ranges.txt"), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/bunny-ranges.txt"), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/stackpath-edgio-ranges.txt"), otherCdnCount));
+                selectedSourceTargets.addAll(sampleSource(loadAssetTokens("scan-corpora/other-cloud-ranges.txt"), otherCdnCount));
+            }
+            synchronized (selectedSourceSnis) {
+                addRelevantSni(selectedSourceSnis, "cloudflare");
+                addRelevantSni(selectedSourceSnis, "mapbox");
+            }
+        }
+    }
+
+    private String getSummaryText(boolean defaultSni, boolean community, boolean akamai, boolean cloudfront, boolean fastly, boolean cloudflare, boolean otherCdn) {
+        ArrayList<String> enabled = new ArrayList<>();
+        if (community) enabled.add("Community");
+        if (akamai) enabled.add("Akamai");
+        if (cloudfront) enabled.add("CloudFront");
+        if (fastly) enabled.add("Fastly");
+        if (cloudflare) enabled.add("Cloudflare");
+        if (otherCdn) enabled.add("Other providers");
+
+        int estimated;
+        int targetSize;
+        synchronized (selectedSourceTargets) {
+            estimated = estimateExpandedTargetCount(new ArrayList<>(selectedSourceTargets), 200000);
+            targetSize = selectedSourceTargets.size();
+        }
+
+        int sniSize;
+        synchronized (selectedSourceSnis) {
+            sniSize = selectedSourceSnis.size();
+        }
+
+        return "Managed sources\n" +
+                (enabled.isEmpty() ? "No target corpus enabled" : joinComma(enabled)) + "\n" +
+                targetSize + " target tokens -> about " + estimated + " expanded endpoints before Total cap.\n" +
+                sniSize + " default/provider SNI routes " + (defaultSni ? "enabled" : "disabled") + "; custom typed targets and SNIs are sampled separately.";
+    }
+
+    private String getHealthText(
+            String rawTargetsText, String rawSnisText,
+            List<String> targetTokens, int estimatedTargets, int targetCap,
+            int threads, int batch, boolean isMultiSni) {
+        int customTargets = lines(rawTargetsText).size();
+        
+        int managedTargets;
+        synchronized (selectedSourceTargets) {
+            managedTargets = selectedSourceTargets.size();
+        }
+
+        int customRoutes = lines(rawSnisText).size();
+        int cappedTargets = Math.min(estimatedTargets, targetCap);
+
+        String composition = targetTokens.isEmpty()
+                ? "No target sources selected yet."
+                : managedTargets + " managed target tokens + " + customTargets + " custom target tokens, deduped before expansion.";
+
+        int sniSize;
+        synchronized (selectedSourceSnis) {
+            sniSize = selectedSourceSnis.size();
+        }
+
+        String routeScope = sniPairingEnabled()
+                ? sniSize + " managed SNI routes + " + customRoutes + " custom SNI routes; route mode is " + (isMultiSni ? "all SNI hosts." : "primary SNI first.")
+                : "IP-only scope; SNI/host names are extracted from TLS and HTTP results, not paired as scan input.";
+
+        return "Source health\n" +
+                composition + "\n" +
+                "Expanded estimate: " + estimatedTargets + " endpoints; Total cap keeps " + cappedTargets + " for this run.\n" +
+                routeScope + "\n" +
+                sourceLoadPostureBg(estimatedTargets, targetCap, threads, batch);
+    }
+
+    private String sourceLoadPostureBg(int estimatedTargets, int targetCap, int threads, int batch) {
+        int capped = Math.min(estimatedTargets, targetCap);
+        if (capped == 0) return "Posture: idle; add or select IP targets before scanning.";
+        if (capped > 12000 || threads > 64 || batch > 8000) return "Posture: wide/high-load; better for plugged-in devices or the sidecar.";
+        if (capped < 500 || threads <= 16) return "Posture: light route validation; good for tuning SNI choices and unstable mobile links.";
+        return "Posture: balanced phone scan; suitable for normal interactive use.";
+    }
+
+    private String getPlanText(
+            String rawTargetsText, String rawSnisText,
+            List<String> targetTokens, int targetCap, int batch, int threads, int timeout,
+            String pathText, String tlsMode, List<Integer> profiles, boolean allSni, String portsText) {
+        int estimatedTargets = estimateExpandedTargetCount(targetTokens, 200000);
+        int cappedTargets = Math.min(estimatedTargets, targetCap);
+        int sniCount = sniPairingEnabled() ? Math.max(1, combinedSniTokens(rawSnisText).size()) : 1;
+        List<Integer> ports = parsePorts(portsText);
+        int units = estimateAttemptUnits(cappedTargets, sniCount, ports.size(), profiles, allSni);
+        
+        int managedTargets;
+        synchronized (selectedSourceTargets) {
+            managedTargets = selectedSourceTargets.size();
+        }
+
+        String path = pathText.trim();
+        if (path.isEmpty()) path = "/";
+        if (!path.startsWith("/")) path = "/" + path;
+
+        return "Scan plan\n" +
+                managedTargets + " managed source tokens + " + lines(rawTargetsText).size() + " custom tokens -> " + estimatedTargets + " estimated endpoints -> " + cappedTargets + " after Total cap " + targetCap + "\n" +
+                (sniPairingEnabled() ? sniCount + " SNI host" + (sniCount == 1 ? "" : "s") + " kept separate for TLS/Host routing; " : "IP-only TLS/HTTP probing; ") + "ports " + ports + "\n" +
+                "Runtime: batch " + batch + ", threads " + threads + ", timeout " + timeout + "ms, HTTP path " + path + "\n" +
+                "TLS ClientHello mode: " + tlsMode + "\n" +
+                workflowLabels(profiles) + " -> " + (profiles.isEmpty() ? "select at least one manual step." : "about " + units + " probe units. Preset overlaps are deduped, not overridden.");
     }
 
     private boolean checked(CheckBox box) {
@@ -1498,9 +1685,9 @@ public class MainActivity extends Activity {
         for (String ip : ips) {
             if (stop.get()) return;
             for (int port : ports) {
-                Result base = new Result(target, ip, port, "");
-                base.tcp(timeout);
-                if (profile == 0 || !base.tcpPass) {
+                if (profile == 0) {
+                    Result base = new Result(target, ip, port, "");
+                    base.tcp(timeout);
                     addResult(base.finish(), suppressNoisyLogs);
                     continue;
                 }
@@ -1511,8 +1698,6 @@ public class MainActivity extends Activity {
                     if (stop.get()) return;
                     String routeSni = sni == null ? "" : sni.trim();
                     Result r = new Result(target, ip, port, routeSni);
-                    r.tcpPass = base.tcpPass;
-                    r.tcpLatencyMs = base.tcpLatencyMs;
                     r.tls(timeout, tlsMode);
                     if (profile >= 2 && r.tlsPass) r.http(timeout, httpPath, tlsMode);
                     addResult(r.finish(), suppressNoisyLogs);
@@ -2250,7 +2435,10 @@ public class MainActivity extends Activity {
                 tlsProfile = tlsProfileName(activeMode);
                 String host = probeHost();
                 Socket raw = new Socket();
+                long connectStart = System.currentTimeMillis();
                 raw.connect(new InetSocketAddress(ip, port), timeout);
+                tcpPass = true;
+                tcpLatencyMs = System.currentTimeMillis() - connectStart;
                 raw.setSoTimeout(timeout);
                 SSLSocket ssl = (SSLSocket) ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(raw, host, port, true);
                 ssl.setSoTimeout(timeout);
@@ -2276,23 +2464,27 @@ public class MainActivity extends Activity {
                 if (tlsProfile.isEmpty()) tlsProfile = tlsProfileName(activeMode);
                 String host = probeHost();
                 Socket raw = new Socket();
+                long connectStart = System.currentTimeMillis();
                 raw.connect(new InetSocketAddress(ip, port), timeout);
+                tcpPass = true;
+                if (tcpLatencyMs <= 0) tcpLatencyMs = System.currentTimeMillis() - connectStart;
                 raw.setSoTimeout(timeout);
                 SSLSocket ssl = (SSLSocket) ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(raw, host, port, true);
                 ssl.setSoTimeout(timeout);
                 configureTlsSocket(ssl, activeMode, true);
                 ssl.startHandshake();
+                tlsPass = true;
                 alpn = selectedAlpn(ssl);
                 String safePath = path == null || path.trim().isEmpty() ? "/" : path.trim();
                 if (!safePath.startsWith("/")) safePath = "/" + safePath;
                 OutputStream out = ssl.getOutputStream();
                 out.write(("HEAD " + safePath + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\nUser-Agent: MaybeEdgeScanner/1.1\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
                 out.flush();
-                BufferedReader reader = new BufferedReader(new InputStreamReader(ssl.getInputStream(), StandardCharsets.US_ASCII));
-                String line = reader.readLine();
+                InputStream in = ssl.getInputStream();
+                String line = readAsciiLineLimited(in, 4096);
                 httpStatus = parseStatus(line);
                 String header;
-                while ((header = reader.readLine()) != null && !header.isEmpty()) {
+                for (int i = 0; i < 48 && (header = readAsciiLineLimited(in, 4096)) != null && !header.isEmpty(); i++) {
                     String lower = header.toLowerCase(Locale.US);
                     if (lower.startsWith("alt-svc:")) {
                         altSvc = header.substring(header.indexOf(':') + 1).trim();
@@ -2536,6 +2728,17 @@ public class MainActivity extends Activity {
         return p[0] + "." + p[1] + "." + p[2] + ".0/24";
     }
     private static int parseStatus(String line) { try { return line != null && line.startsWith("HTTP/") ? Integer.parseInt(line.split(" ")[1]) : 0; } catch (Exception e) { return 0; } }
+
+    private static String readAsciiLineLimited(InputStream in, int maxBytes) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(maxBytes, 512));
+        for (int i = 0; i < maxBytes; i++) {
+            int ch = in.read();
+            if (ch == -1) return out.size() == 0 ? null : out.toString(StandardCharsets.US_ASCII.name());
+            if (ch == '\n') break;
+            if (ch != '\r') out.write(ch);
+        }
+        return out.toString(StandardCharsets.US_ASCII.name());
+    }
     private static void configureTlsSocket(SSLSocket ssl, int tlsMode, boolean rawHttpProbe) {
         ArrayList<String> protocols = new ArrayList<>();
         List<String> supportedProtocols = Arrays.asList(ssl.getSupportedProtocols());
@@ -3187,7 +3390,7 @@ public class MainActivity extends Activity {
                 Thread stderrThread = collectProcessStream(process.getErrorStream(), stderr);
                 boolean finished = process.waitFor(9, java.util.concurrent.TimeUnit.SECONDS);
                 if (!finished) {
-                    process.destroy();
+                    process.destroyForcibly();
                     exitCode = -2;
                     output = "Action: " + label + "\nExit: timeout\n\nThe privileged command did not finish within 9 seconds. No follow-up command was queued.";
                 } else {
@@ -3250,9 +3453,13 @@ public class MainActivity extends Activity {
     }
 
     private Process startShizukuProcess(String[] command) throws Exception {
-        Method newProcess = Shizuku.class.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
-        newProcess.setAccessible(true);
-        return (Process) newProcess.invoke(null, (Object) command, null, null);
+        try {
+            java.lang.reflect.Method method = Shizuku.class.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
+            method.setAccessible(true);
+            return (Process) method.invoke(null, (Object) command, null, null);
+        } catch (Exception e) {
+            throw new RuntimeException("Shizuku process invocation failed via reflection", e);
+        }
     }
 
     private CommandResult runShizukuProcessCapture(String[] command, int timeoutSeconds) throws Exception {
@@ -3263,7 +3470,7 @@ public class MainActivity extends Activity {
         Thread stderrThread = collectProcessStream(process.getErrorStream(), stderr);
         boolean finished = process.waitFor(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS);
         if (!finished) {
-            process.destroy();
+            process.destroyForcibly();
             joinQuietly(stdoutThread);
             joinQuietly(stderrThread);
             return new CommandResult(-2, bufferedText(stdout), bufferedText(stderr));

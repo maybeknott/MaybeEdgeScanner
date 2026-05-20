@@ -200,6 +200,7 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	}
 	metricScansStarted.Add(1)
 	req.normalize()
+	globalBackoffNS.Store(0)
 	explicitTargets := len(req.Targets) > 0
 	targets := expandTargets(req.Targets, req.MaxTargets, req.MaxCIDRHosts, req.RespectSafety)
 	if len(targets) == 0 && !explicitTargets {
@@ -235,6 +236,7 @@ func scan(w http.ResponseWriter, r *http.Request) {
 			activeCancel = nil
 		}
 		activeCancelMu.Unlock()
+		globalBackoffNS.Store(0)
 		cancel()
 	}()
 
@@ -273,14 +275,6 @@ func scan(w http.ResponseWriter, r *http.Request) {
 						if ctx.Err() != nil {
 							return
 						}
-						if delay := globalBackoffNS.Load(); delay > 0 {
-							select {
-							case <-ctx.Done():
-								return
-							case <-time.After(time.Duration(delay)):
-								globalBackoffNS.Store(0)
-							}
-						}
 						waitRate(ctx, limiter, req.JitterMS)
 						res := probe(ctx, t, port, req, batchNo)
 						select {
@@ -295,6 +289,14 @@ func scan(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			defer close(jobs)
 			for _, t := range targets[start:end] {
+				if delay := globalBackoffNS.Load(); delay > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(time.Duration(delay)):
+						globalBackoffNS.Store(0)
+					}
+				}
 				select {
 				case <-ctx.Done():
 					return
@@ -648,8 +650,15 @@ func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutM
 	state := conn.ConnectionState()
 	info := tlsInfo{Version: tlsVersionName(state.Version), Cipher: cipherSuiteName(state.CipherSuite), ALPN: state.NegotiatedProtocol}
 	if len(state.PeerCertificates) > 0 {
+		verifyName := strings.TrimSpace(sni)
+		if verifyName == "" {
+			verifyName = conn.RemoteAddr().String()
+			if host, _, err := net.SplitHostPort(verifyName); err == nil {
+				verifyName = host
+			}
+		}
 		opts := x509.VerifyOptions{
-			DNSName:       sni,
+			DNSName:       verifyName,
 			Intermediates: x509.NewCertPool(),
 		}
 		for _, cert := range state.PeerCertificates[1:] {
@@ -680,10 +689,12 @@ func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path stri
 	if host == "" {
 		host = ip
 	}
-	_, _ = fmt.Fprintf(conn, "HEAD %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: MaybeEdgeScanner/1.2\r\nX-Maybe-Cachebuster: %d\r\nConnection: close\r\n\r\n", path, host, time.Now().UnixNano())
+	if _, err := fmt.Fprintf(conn, "HEAD %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: MaybeEdgeScanner/1.2\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nX-Maybe-Cachebuster: %d\r\nConnection: close\r\n\r\n", path, host, time.Now().UnixNano()); err != nil {
+		return false, 0, "", "", "", false
+	}
 	reader := pooledReader(io.LimitReader(conn, 64*1024))
 	defer putReader(reader)
-	line, err := reader.ReadString('\n')
+	line, err := readLimitedLine(reader, 4096)
 	status := parseHTTPStatus(line)
 	server, cache, altSvc := "", "", ""
 	for _, header := range readHTTPHeaders(reader, 48) {
@@ -707,7 +718,7 @@ func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path stri
 func readHTTPHeaders(reader *bufio.Reader, maxLines int) []string {
 	var headers []string
 	for i := 0; i < maxLines; i++ {
-		line, err := reader.ReadString('\n')
+		line, err := readLimitedLine(reader, 4096)
 		if err != nil {
 			break
 		}
@@ -1102,6 +1113,33 @@ func pooledReader(r io.Reader) *bufio.Reader {
 func putReader(reader *bufio.Reader) {
 	reader.Reset(bytes.NewReader(nil))
 	readerPool.Put(reader)
+}
+
+func readLimitedLine(reader *bufio.Reader, limit int) (string, error) {
+	var line []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if err != nil {
+			if errors.Is(err, bufio.ErrBufferFull) {
+				line = append(line, chunk...)
+				if len(line) >= limit {
+					return "", errors.New("line too long")
+				}
+				continue
+			}
+			line = append(line, chunk...)
+			if len(line) > limit {
+				return "", errors.New("line too long")
+			}
+			return string(line), err
+		}
+		line = append(line, chunk...)
+		break
+	}
+	if len(line) > limit {
+		return "", errors.New("line too long")
+	}
+	return string(line), nil
 }
 
 type errorRingBuffer struct {
