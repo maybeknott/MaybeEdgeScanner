@@ -2,11 +2,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -25,6 +28,7 @@ import (
 	"time"
 
 	tls "github.com/refraction-networking/utls"
+	"golang.org/x/time/rate"
 )
 
 type scanRequest struct {
@@ -57,6 +61,7 @@ type result struct {
 	HTTPStatus     int    `json:"http_status"`
 	TLSVersion     string `json:"tls_version,omitempty"`
 	TLSCipher      string `json:"tls_cipher,omitempty"`
+	CertVerified   bool   `json:"cert_verified"`
 	ALPN           string `json:"alpn,omitempty"`
 	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
 	CertSubject    string `json:"cert_subject,omitempty"`
@@ -97,6 +102,7 @@ var (
 	metricDNSRuns        atomic.Uint64
 	metricSafetySkipped  atomic.Uint64
 	metricBackoffEvents  atomic.Uint64
+	globalBackoffNS      atomic.Int64
 	safetyCIDRPrefixes   = loadSafetyPrefixes()
 )
 
@@ -194,9 +200,14 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	}
 	metricScansStarted.Add(1)
 	req.normalize()
+	explicitTargets := len(req.Targets) > 0
 	targets := expandTargets(req.Targets, req.MaxTargets, req.MaxCIDRHosts, req.RespectSafety)
-	if len(targets) == 0 {
+	if len(targets) == 0 && !explicitTargets {
 		targets = expandTargets(loadLines("assets/default_edges_extra.txt"), req.MaxTargets, req.MaxCIDRHosts, req.RespectSafety)
+	}
+	if len(targets) == 0 && explicitTargets {
+		http.Error(w, "no usable targets after CIDR/range expansion and safety filtering", http.StatusBadRequest)
+		return
 	}
 	if len(req.SNIs) == 0 {
 		req.SNIs = loadLines("assets/default_snis.txt")
@@ -232,7 +243,10 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	enc := json.NewEncoder(w)
 	jobsTotal := len(targets) * len(req.Ports)
 	st := stats{Total: jobsTotal, Batches: int(math.Ceil(float64(len(targets)) / float64(req.BatchSize)))}
-	_ = enc.Encode(map[string]any{"type": "init", "total": st.Total, "batches": st.Batches, "warnings": warnings})
+	if err := enc.Encode(map[string]any{"type": "init", "total": st.Total, "batches": st.Batches, "warnings": warnings}); err != nil {
+		cancel()
+		return
+	}
 	flush(flusher)
 
 	var checked atomic.Int64
@@ -242,13 +256,10 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	var down atomic.Int64
 
 	limiter := newRateLimiter(req.RatePerSecond)
-	if limiter != nil {
-		defer limiter.Stop()
-	}
 	for start, batchNo := 0, 1; start < len(targets) && ctx.Err() == nil; start, batchNo = start+req.BatchSize, batchNo+1 {
 		end := min(len(targets), start+req.BatchSize)
 		jobs := make(chan string)
-		results := make(chan result)
+		results := make(chan result, req.BatchSize)
 		var wg sync.WaitGroup
 		for i := 0; i < min(req.Threads, end-start); i++ {
 			wg.Add(1)
@@ -262,8 +273,21 @@ func scan(w http.ResponseWriter, r *http.Request) {
 						if ctx.Err() != nil {
 							return
 						}
+						if delay := globalBackoffNS.Load(); delay > 0 {
+							select {
+							case <-ctx.Done():
+								return
+							case <-time.After(time.Duration(delay)):
+								globalBackoffNS.Store(0)
+							}
+						}
 						waitRate(ctx, limiter, req.JitterMS)
-						results <- probe(ctx, t, port, req, batchNo)
+						res := probe(ctx, t, port, req, batchNo)
+						select {
+						case <-ctx.Done():
+							return
+						case results <- res:
+						}
 					}
 				}
 			}()
@@ -279,7 +303,7 @@ func scan(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 		go func() { wg.Wait(); close(results) }()
-		recentErrors := make([]string, 0, 64)
+		recentErrors := newErrorRingBuffer(64)
 		for res := range results {
 			c := int(checked.Add(1))
 			metricScanResults.Add(1)
@@ -306,25 +330,28 @@ func scan(w http.ResponseWriter, r *http.Request) {
 				metricResets.Add(1)
 			}
 			if res.Error != "" {
-				recentErrors = append(recentErrors, res.Error)
-				if len(recentErrors) > 64 {
-					recentErrors = recentErrors[len(recentErrors)-64:]
-				}
-				adaptiveBackoff(ctx, recentErrors, req.RatePerSecond)
+				recentErrors.Append(res.Error)
+				trackAdaptiveBackoff(recentErrors.Snapshot(), req.RatePerSecond)
 			}
 			payloadStats := stats{
 				Total: st.Total, Checked: c, Working: int(working.Load()),
 				TLSWorking: int(tlsWorking.Load()), HTTPWorking: int(httpWorking.Load()),
 				Down: int(down.Load()), Batches: st.Batches, Batch: batchNo,
 			}
-			_ = enc.Encode(map[string]any{"type": "progress", "result": res, "stats": payloadStats})
+			if err := enc.Encode(map[string]any{"type": "progress", "result": res, "stats": payloadStats}); err != nil {
+				cancel()
+				return
+			}
 			flush(flusher)
 		}
 	}
 	if ctx.Err() == nil {
 		metricScansCompleted.Add(1)
 	}
-	_ = enc.Encode(map[string]any{"type": "done", "stopped": ctx.Err() != nil})
+	if err := enc.Encode(map[string]any{"type": "done", "stopped": ctx.Err() != nil}); err != nil {
+		cancel()
+		return
+	}
 	flush(flusher)
 }
 
@@ -388,11 +415,28 @@ func exportNmap(w http.ResponseWriter, r *http.Request) {
 }
 
 func xmlEscape(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, `"`, "&quot;")
-	return s
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '&':
+			b.WriteString("&amp;")
+		case '<':
+			b.WriteString("&lt;")
+		case '>':
+			b.WriteString("&gt;")
+		case '"':
+			b.WriteString("&quot;")
+		case '\'':
+			b.WriteString("&apos;")
+		default:
+			if r == '\t' || r == '\n' || r == '\r' || r >= 0x20 {
+				b.WriteRune(r)
+			} else {
+				b.WriteRune('?')
+			}
+		}
+	}
+	return b.String()
 }
 
 func (r *scanRequest) normalize() {
@@ -446,36 +490,57 @@ func (r *scanRequest) normalize() {
 
 func probe(ctx context.Context, target string, port int, req scanRequest, batchNo int) result {
 	res := result{Target: target, Port: port, BatchNumber: batchNo, CDN: "unknown"}
-	ip, sni, err := resolveTarget(target)
-	res.IP, res.SNI = ip, sni
+	ips, sni, err := resolveTargetCandidates(target)
+	if len(ips) > 0 {
+		res.IP = ips[0]
+	}
+	res.SNI = sni
 	if err != nil {
 		res.Error = err.Error()
 		return res
 	}
 	snis := candidateSNIs(sni, req.SNIs, req.MultiSNI)
 
-	start := time.Now()
-	res.TCP = tcp(ctx, ip, port, req.TimeoutMS)
-	res.LatencyMS = time.Since(start).Milliseconds()
-	res.CDN = detectCDN(ip, sni, "")
-	for _, candidateSNI := range snis {
+	for _, ip := range ips {
 		if ctx.Err() != nil {
 			break
 		}
-		fingerprint := chooseTLSFingerprint(req.TLSFingerprint)
-		tlsInfo, tlsOK := tlsProbe(ctx, ip, port, candidateSNI, req.TimeoutMS, fingerprint)
-		if tlsOK {
-			res.TLS = true
-			res.SNI = candidateSNI
-			res.TLSVersion = tlsInfo.Version
-			res.TLSCipher = tlsInfo.Cipher
-			res.ALPN = tlsInfo.ALPN
-			res.TLSFingerprint = fingerprint
-			res.CertSubject = tlsInfo.Subject
-			res.CDN = detectCDN(ip, candidateSNI, tlsInfo.Subject)
-			if req.HTTPProbe {
-				res.HTTP, res.HTTPStatus, res.ServerHeader, res.CacheHeader, res.AltSvc, res.HTTP3Hint = httpProbe(ctx, ip, port, candidateSNI, req.HTTPPath, req.TimeoutMS, fingerprint)
+		res.IP = ip
+		res.CDN = detectCDN(ip, sni, "")
+		var tlsAttempted bool
+		for _, candidateSNI := range snis {
+			if ctx.Err() != nil {
+				break
 			}
+			fingerprint := chooseTLSFingerprint(req.TLSFingerprint)
+			tlsAttempted = true
+			start := time.Now()
+			conn, tlsInfo, tlsOK := tlsProbeOpen(ctx, ip, port, candidateSNI, req.TimeoutMS, fingerprint)
+			if tlsOK {
+				res.TCP = true
+				res.LatencyMS = time.Since(start).Milliseconds()
+				res.TLS = true
+				res.SNI = candidateSNI
+				res.TLSVersion = tlsInfo.Version
+				res.TLSCipher = tlsInfo.Cipher
+				res.CertVerified = tlsInfo.Verified
+				res.ALPN = tlsInfo.ALPN
+				res.TLSFingerprint = fingerprint
+				res.CertSubject = tlsInfo.Subject
+				res.CDN = detectCDN(ip, candidateSNI, tlsInfo.Subject)
+				if req.HTTPProbe {
+					res.HTTP, res.HTTPStatus, res.ServerHeader, res.CacheHeader, res.AltSvc, res.HTTP3Hint = httpProbeConn(ctx, conn, ip, candidateSNI, req.HTTPPath)
+				}
+				_ = conn.Close()
+				break
+			}
+		}
+		if !res.TLS && tlsAttempted {
+			start := time.Now()
+			res.TCP = tcp(ctx, ip, port, req.TimeoutMS)
+			res.LatencyMS = time.Since(start).Milliseconds()
+		}
+		if res.TLS || res.TCP {
 			break
 		}
 	}
@@ -484,24 +549,36 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 }
 
 func resolveTarget(target string) (string, string, error) {
+	ips, sni, err := resolveTargetCandidates(target)
+	if err != nil {
+		return "", sni, err
+	}
+	return ips[0], sni, nil
+}
+
+func resolveTargetCandidates(target string) ([]string, string, error) {
 	if net.ParseIP(target) != nil {
-		return target, "", nil
+		return []string{target}, "", nil
 	}
 	ips, err := net.LookupIP(target)
 	if err != nil || len(ips) == 0 {
-		return "", "", errors.New("DNS failed")
+		return nil, "", errors.New("DNS failed")
+	}
+	var out []string
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			out = append(out, v4.String())
+		}
 	}
 	for _, ip := range ips {
 		if ip.To4() == nil && ip.To16() != nil {
-			return ip.String(), target, nil
+			out = append(out, ip.String())
 		}
 	}
-	for _, ip := range ips {
-		if v4 := ip.To4(); v4 != nil {
-			return v4.String(), target, nil
-		}
+	if len(out) == 0 {
+		return nil, "", errors.New("no IP address")
 	}
-	return "", "", errors.New("no IP address")
+	return uniqueInOrder(out), target, nil
 }
 
 func candidateSNIs(resolvedSNI string, corpus []string, multiSNI bool) []string {
@@ -548,24 +625,45 @@ func tcp(ctx context.Context, ip string, port int, timeoutMS int) bool {
 }
 
 type tlsInfo struct {
-	Version string
-	Cipher  string
-	ALPN    string
-	Subject string
+	Version  string
+	Cipher   string
+	ALPN     string
+	Verified bool
+	Subject  string
 }
 
 func tlsProbe(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (tlsInfo, bool) {
+	conn, info, ok := tlsProbeOpen(ctx, ip, port, sni, timeoutMS, fingerprint)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	return info, ok
+}
+
+func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (*tls.UConn, tlsInfo, bool) {
 	conn, err := dialUTLS(ctx, ip, port, sni, timeoutMS, fingerprint)
 	if err != nil {
-		return tlsInfo{}, false
+		return nil, tlsInfo{}, false
 	}
 	state := conn.ConnectionState()
 	info := tlsInfo{Version: tlsVersionName(state.Version), Cipher: cipherSuiteName(state.CipherSuite), ALPN: state.NegotiatedProtocol}
 	if len(state.PeerCertificates) > 0 {
+		opts := x509.VerifyOptions{
+			DNSName:       sni,
+			Intermediates: x509.NewCertPool(),
+		}
+		for _, cert := range state.PeerCertificates[1:] {
+			opts.Intermediates.AddCert(cert)
+		}
+		_, verifyErr := state.PeerCertificates[0].Verify(opts)
+		info.Verified = verifyErr == nil
 		info.Subject = state.PeerCertificates[0].Subject.String()
 	}
-	_ = conn.Close()
-	return info, ctx.Err() == nil
+	if ctx.Err() != nil {
+		_ = conn.Close()
+		return nil, info, false
+	}
+	return conn, info, true
 }
 
 func httpProbe(ctx context.Context, ip string, port int, sni, path string, timeoutMS int, fingerprint string) (bool, int, string, string, string, bool) {
@@ -574,21 +672,21 @@ func httpProbe(ctx context.Context, ip string, port int, sni, path string, timeo
 		return false, 0, "", "", "", false
 	}
 	defer conn.Close()
+	return httpProbeConn(ctx, conn, ip, sni, path)
+}
+
+func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path string) (bool, int, string, string, string, bool) {
 	host := strings.TrimSpace(sni)
 	if host == "" {
 		host = ip
 	}
-	_, _ = fmt.Fprintf(conn, "HEAD %s?cachebuster=%d HTTP/1.1\r\nHost: %s\r\nUser-Agent: MaybeEdgeScanner/1.2\r\nConnection: close\r\n\r\n", path, time.Now().UnixNano(), host)
-	reader := pooledReader(conn)
+	_, _ = fmt.Fprintf(conn, "HEAD %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: MaybeEdgeScanner/1.2\r\nX-Maybe-Cachebuster: %d\r\nConnection: close\r\n\r\n", path, host, time.Now().UnixNano())
+	reader := pooledReader(io.LimitReader(conn, 64*1024))
 	defer putReader(reader)
 	line, err := reader.ReadString('\n')
 	status := parseHTTPStatus(line)
 	server, cache, altSvc := "", "", ""
-	for i := 0; i < 48; i++ {
-		header, hErr := reader.ReadString('\n')
-		if hErr != nil || strings.TrimSpace(header) == "" {
-			break
-		}
+	for _, header := range readHTTPHeaders(reader, 48) {
 		lower := strings.ToLower(header)
 		if strings.HasPrefix(lower, "server:") {
 			server = strings.TrimSpace(header[len("server:"):])
@@ -604,6 +702,26 @@ func httpProbe(ctx context.Context, ip string, port int, sni, path string, timeo
 		}
 	}
 	return ctx.Err() == nil && err == nil && status > 0 && status < 500, status, server, cache, altSvc, strings.Contains(strings.ToLower(altSvc), "h3")
+}
+
+func readHTTPHeaders(reader *bufio.Reader, maxLines int) []string {
+	var headers []string
+	for i := 0; i < maxLines; i++ {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			break
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if strings.TrimSpace(line) == "" {
+			break
+		}
+		if len(headers) > 0 && (strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")) {
+			headers[len(headers)-1] += " " + strings.TrimSpace(line)
+			continue
+		}
+		headers = append(headers, line)
+	}
+	return headers
 }
 
 func dialUTLS(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (*tls.UConn, error) {
@@ -625,10 +743,20 @@ func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, time
 		// edge certificates can be measured and reported instead of hidden as TLS failures.
 		InsecureSkipVerify: true,
 	}, clientHelloID(fingerprint))
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = rawConn.Close()
+		case <-done:
+		}
+	}()
 	if err := conn.Handshake(); err != nil {
+		close(done)
 		_ = rawConn.Close()
 		return nil, err
 	}
+	close(done)
 	if err := ctx.Err(); err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -735,17 +863,36 @@ func score(r result) int {
 }
 
 func detectCDN(ip, sni, cert string) string {
+	if addr, err := netip.ParseAddr(ip); err == nil {
+		switch {
+		case prefixContains(addr, "104.16.0.0/12") || prefixContains(addr, "172.64.0.0/13") || prefixContains(addr, "2606:4700::/32"):
+			return "cloudflare"
+		case prefixContains(addr, "151.101.0.0/16") || prefixContains(addr, "2a04:4e42::/32"):
+			return "fastly"
+		case prefixContains(addr, "13.32.0.0/15") || prefixContains(addr, "13.224.0.0/14") || prefixContains(addr, "18.64.0.0/14") || prefixContains(addr, "54.230.0.0/16"):
+			return "cloudfront"
+		case prefixContains(addr, "23.32.0.0/11") || prefixContains(addr, "23.192.0.0/11") || prefixContains(addr, "184.24.0.0/13") || prefixContains(addr, "2a02:26f0::/32"):
+			return "akamai"
+		}
+	}
 	host := strings.ToLower(sni + " " + cert)
 	switch {
-	case strings.Contains(host, "cloudflare") || strings.HasPrefix(ip, "104.16.") || strings.HasPrefix(ip, "104.17.") || strings.HasPrefix(ip, "104.18."):
+	case strings.Contains(host, "cloudflare"):
 		return "cloudflare"
-	case strings.Contains(host, "github") || strings.HasPrefix(ip, "151.101."):
+	case strings.Contains(host, "github") || strings.Contains(host, "fastly"):
 		return "fastly"
-	case strings.HasPrefix(ip, "23.") || strings.HasPrefix(ip, "184.") || strings.HasPrefix(ip, "96.") || strings.HasPrefix(ip, "2."):
+	case strings.Contains(host, "akamai"):
 		return "akamai"
+	case strings.Contains(host, "cloudfront") || strings.Contains(host, "amazon"):
+		return "cloudfront"
 	default:
 		return "unknown"
 	}
+}
+
+func prefixContains(addr netip.Addr, cidr string) bool {
+	prefix, err := netip.ParsePrefix(cidr)
+	return err == nil && prefix.Contains(addr)
 }
 
 func tlsVersionName(v uint16) string {
@@ -793,7 +940,7 @@ func expandTargets(raw []string, capCount int, maxCIDRHosts int, respectSafety b
 	set := make(map[string]bool)
 	var out []string
 	for _, item := range raw {
-		for _, expanded := range expandOne(strings.TrimSpace(item), min(maxCIDRHosts, capCount-len(out)), respectSafety) {
+		for _, expanded := range expandOne(strings.TrimSpace(item), min(maxCIDRHosts, capCount-len(out)), respectSafety, set) {
 			if expanded != "" && !set[expanded] {
 				set[expanded] = true
 				out = append(out, expanded)
@@ -806,12 +953,12 @@ func expandTargets(raw []string, capCount int, maxCIDRHosts int, respectSafety b
 	return out
 }
 
-func expandOne(s string, remaining int, respectSafety bool) []string {
+func expandOne(s string, remaining int, respectSafety bool, seen map[string]bool) []string {
 	if remaining <= 0 || s == "" {
 		return nil
 	}
 	if strings.Contains(s, "-") && !strings.Contains(s, "/") {
-		return expandRange(s, remaining, respectSafety)
+		return expandRange(s, remaining, respectSafety, seen)
 	}
 	if !strings.Contains(s, "/") {
 		if respectSafety && isReservedOrUnsafe(s) {
@@ -839,6 +986,10 @@ func expandOne(s string, remaining int, respectSafety bool) []string {
 			break
 		}
 		text := current.String()
+		if seen[text] {
+			current = current.Next()
+			continue
+		}
 		if !respectSafety || !isReservedOrUnsafe(text) {
 			out = append(out, text)
 		} else {
@@ -849,17 +1000,17 @@ func expandOne(s string, remaining int, respectSafety bool) []string {
 	return out
 }
 
-func expandRange(s string, remaining int, respectSafety bool) []string {
+func expandRange(s string, remaining int, respectSafety bool, seen map[string]bool) []string {
 	parts := strings.SplitN(s, "-", 2)
 	if len(parts) != 2 || remaining <= 0 {
 		return nil
 	}
 	start, err := netip.ParseAddr(strings.TrimSpace(parts[0]))
-	if err != nil || !start.Is4() {
+	if err != nil {
 		return nil
 	}
 	end, err := netip.ParseAddr(strings.TrimSpace(parts[1]))
-	if err != nil || !end.Is4() {
+	if err != nil || start.Is4() != end.Is4() {
 		return nil
 	}
 	if start.Compare(end) > 0 {
@@ -868,6 +1019,9 @@ func expandRange(s string, remaining int, respectSafety bool) []string {
 	var out []string
 	for current := start; current.IsValid() && current.Compare(end) <= 0 && len(out) < remaining; current = current.Next() {
 		text := current.String()
+		if seen[text] {
+			continue
+		}
 		if !respectSafety || !isReservedOrUnsafe(text) {
 			out = append(out, text)
 		} else {
@@ -939,19 +1093,64 @@ var readerPool = sync.Pool{New: func() any {
 	return bufio.NewReaderSize(nil, 16*1024)
 }}
 
-func pooledReader(r net.Conn) *bufio.Reader {
+func pooledReader(r io.Reader) *bufio.Reader {
 	reader := readerPool.Get().(*bufio.Reader)
 	reader.Reset(r)
 	return reader
 }
 
 func putReader(reader *bufio.Reader) {
-	reader.Reset(nil)
+	reader.Reset(bytes.NewReader(nil))
 	readerPool.Put(reader)
 }
 
-func adaptiveBackoff(ctx context.Context, recentErrors []string, ratePerSecond int) {
+type errorRingBuffer struct {
+	storage []string
+	cursor  int
+	full    bool
+}
+
+func newErrorRingBuffer(capacity int) *errorRingBuffer {
+	if capacity < 1 {
+		capacity = 1
+	}
+	return &errorRingBuffer{storage: make([]string, capacity)}
+}
+
+func (rb *errorRingBuffer) Append(errText string) {
+	if rb == nil || len(rb.storage) == 0 {
+		return
+	}
+	rb.storage[rb.cursor] = errText
+	rb.cursor = (rb.cursor + 1) % len(rb.storage)
+	if rb.cursor == 0 {
+		rb.full = true
+	}
+}
+
+func (rb *errorRingBuffer) Snapshot() []string {
+	if rb == nil || len(rb.storage) == 0 {
+		return nil
+	}
+	count := rb.cursor
+	start := 0
+	if rb.full {
+		count = len(rb.storage)
+		start = rb.cursor
+	}
+	out := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		errText := rb.storage[(start+i)%len(rb.storage)]
+		if errText != "" {
+			out = append(out, errText)
+		}
+	}
+	return out
+}
+
+func trackAdaptiveBackoff(recentErrors []string, ratePerSecond int) {
 	if ratePerSecond <= 0 || len(recentErrors) < 24 {
+		globalBackoffNS.Store(0)
 		return
 	}
 	var noisy int
@@ -964,10 +1163,7 @@ func adaptiveBackoff(ctx context.Context, recentErrors []string, ratePerSecond i
 	if noisy*100/len(recentErrors) >= 40 {
 		metricBackoffEvents.Add(1)
 		delay := time.Duration(min(2000, 250+noisy*25)) * time.Millisecond
-		select {
-		case <-ctx.Done():
-		case <-time.After(delay):
-		}
+		globalBackoffNS.Store(delay.Nanoseconds())
 	}
 }
 
@@ -1002,23 +1198,18 @@ func shuffleStrings(xs []string) {
 	r.Shuffle(len(xs), func(i, j int) { xs[i], xs[j] = xs[j], xs[i] })
 }
 
-func newRateLimiter(rate int) *time.Ticker {
-	if rate <= 0 {
+func newRateLimiter(ratePerSecond int) *rate.Limiter {
+	if ratePerSecond <= 0 {
 		return nil
 	}
-	interval := time.Second / time.Duration(rate)
-	if interval <= 0 {
-		interval = time.Nanosecond
-	}
-	return time.NewTicker(interval)
+	burst := max(1, min(ratePerSecond, 64))
+	return rate.NewLimiter(rate.Limit(ratePerSecond), burst)
 }
 
-func waitRate(ctx context.Context, limiter *time.Ticker, jitterMS int) {
+func waitRate(ctx context.Context, limiter *rate.Limiter, jitterMS int) {
 	if limiter != nil {
-		select {
-		case <-ctx.Done():
+		if err := limiter.Wait(ctx); err != nil {
 			return
-		case <-limiter.C:
 		}
 	}
 	if jitterMS > 0 {

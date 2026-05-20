@@ -13,6 +13,10 @@ def releaseSigningFromEnv = System.getenv('RELEASE_STORE_FILE') &&
     System.getenv('RELEASE_KEY_ALIAS') &&
     System.getenv('RELEASE_KEY_PASSWORD')
 def hasAnyReleaseSigning = hasReleaseSigning || releaseSigningFromEnv
+def baseVersionCode = 20260519
+def ciRunNumber = System.getenv('GITHUB_RUN_NUMBER')
+def resolvedVersionCode = (System.getenv('ANDROID_VERSION_CODE') ?: (ciRunNumber ? "${baseVersionCode + ciRunNumber.toInteger()}" : "${baseVersionCode}")).toInteger()
+def resolvedVersionName = System.getenv('ANDROID_VERSION_NAME') ?: '1.0.0'
 
 android {
     namespace 'com.maybeedgescanner'
@@ -22,8 +26,8 @@ android {
         applicationId 'com.maybeknott.maybeedgescanner'
         minSdk 24
         targetSdk 35
-        versionCode 20260519
-        versionName '1.0.0'
+        versionCode resolvedVersionCode
+        versionName resolvedVersionName
     }
 
     flavorDimensions 'artifactAbi'

@@ -23,6 +23,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.animation.DecelerateInterpolator;
@@ -58,8 +59,6 @@ public class MainActivity extends Activity {
     private static final int FIELD = Color.rgb(9, 20, 29);
     private static final int MUTED = Color.rgb(140, 161, 178);
     private static final String SUPPORT_GITHUB = "https://github.com/maybeknott/MaybeEdgeScanner/";
-    private static final String SUPPORT_EVM = "0x8988ed09DA218799e99Fb1E94243cC1C1cB41A40";
-    private static final String SUPPORT_BTC = "bc1qt2mxzmlcv3re4pjemshejzq0hj3c8dgp0e5tvx";
     private static final int SHIZUKU_REQUEST_CODE = 4601;
     private static final String[] RADIO_MODE_KEYS = {
             "preferred_network_mode",
@@ -78,12 +77,14 @@ public class MainActivity extends Activity {
     private final AtomicBoolean shizukuCommandRunning = new AtomicBoolean(false);
     private final AtomicInteger checkedTargets = new AtomicInteger(0);
     private final List<Result> allResults = Collections.synchronizedList(new ArrayList<>());
-    private final Map<String, List<String>> assetLineCache = new HashMap<>();
-    private final Map<String, LinkedHashSet<String>> assetTokenCache = new HashMap<>();
-    private final Map<String, LinkedHashSet<String>> communityCorpusCache = new HashMap<>();
+    private final ConcurrentHashMap<String, List<String>> assetLineCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, LinkedHashSet<String>> assetTokenCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, LinkedHashSet<String>> communityCorpusCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Object> assetReadLocks = new ConcurrentHashMap<>();
     private final LinkedHashSet<String> selectedSourceTargets = new LinkedHashSet<>();
     private final LinkedHashSet<String> selectedSourceSnis = new LinkedHashSet<>();
     private final ArrayDeque<String> logLines = new ArrayDeque<>();
+    private final StringBuilder stableLogBuilder = new StringBuilder();
     private ExecutorService executor;
     private boolean suppressUiRefresh;
     private String cachedResourceLine = "battery n/a | heap 0MB";
@@ -123,6 +124,8 @@ public class MainActivity extends Activity {
     private final ArrayList<Button> visualizationButtons = new ArrayList<>();
     private final ArrayList<Button> densityButtons = new ArrayList<>();
     private final Shizuku.OnRequestPermissionResultListener shizukuPermissionListener = this::onShizukuPermissionResult;
+    private final Shizuku.OnBinderReceivedListener shizukuBinderReceivedListener = this::onShizukuBinderReceived;
+    private final Shizuku.OnBinderDeadListener shizukuBinderDeadListener = this::onShizukuBinderDead;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -139,6 +142,41 @@ public class MainActivity extends Activity {
     @Override protected void onDestroy() {
         removeShizukuListener();
         super.onDestroy();
+    }
+
+    @Override protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        synchronized (allResults) {
+            outState.putSerializable("results", new ArrayList<>(allResults));
+        }
+        synchronized (logLines) {
+            outState.putStringArrayList("logs", new ArrayList<>(logLines));
+        }
+    }
+
+    @Override protected void onRestoreInstanceState(Bundle savedInstanceState) {
+        super.onRestoreInstanceState(savedInstanceState);
+        if (savedInstanceState == null) return;
+        Object restored = savedInstanceState.getSerializable("results");
+        if (restored instanceof ArrayList<?>) {
+            synchronized (allResults) {
+                allResults.clear();
+                for (Object item : (ArrayList<?>) restored) {
+                    if (item instanceof Result) allResults.add((Result) item);
+                }
+            }
+        }
+        ArrayList<String> logs = savedInstanceState.getStringArrayList("logs");
+        if (logs != null) {
+            synchronized (logLines) {
+                logLines.clear();
+                logLines.addAll(logs);
+                rebuildStableLogBuilder();
+            }
+            if (logView != null) logView.setText(stableLogBuilder.toString().trim());
+        }
+        updateProgress();
+        scheduleRender();
     }
 
     private void buildUi() {
@@ -445,7 +483,8 @@ public class MainActivity extends Activity {
         stableHistoryPanel.setPadding(dp(12), dp(10), dp(12), dp(10));
         setOuterMargin(stableHistoryPanel, 0, dp(8), 0, dp(8));
         liveTab.addView(stableHistoryPanel);
-        resultList = column();
+        resultList = new LinearLayout(this);
+        resultList.setOrientation(LinearLayout.VERTICAL);
         resultList.setLayoutTransition(null);
         liveTab.addView(resultList);
 
@@ -458,6 +497,8 @@ public class MainActivity extends Activity {
         diagnosticsTab.addView(section("Logs"));
         logView = text("", 12, MUTED, false);
         logView.setTypeface(Typeface.MONOSPACE);
+        if (Build.VERSION.SDK_INT >= 21) logView.setLetterSpacing(0.06f);
+        if (Build.VERSION.SDK_INT >= 28) logView.setLineHeight(dp(18));
         diagnosticsTab.addView(logView);
         diagnosticsTab.addView(collapsibleBox("Radio and network assist", diagnosticsRadioPanel(), false));
         diagnosticsTab.addView(collapsibleBox("Support and project links", diagnosticsSupportPanel(), false));
@@ -812,7 +853,7 @@ public class MainActivity extends Activity {
             @Override public void afterTextChanged(android.text.Editable s) {
                 if (suppressUiRefresh) return;
                 ui.removeCallbacks(runner);
-                ui.postDelayed(runner, 250);
+                ui.postDelayed(runner, 650);
             }
         };
     }
@@ -1016,10 +1057,31 @@ public class MainActivity extends Activity {
         styleTab(tabTargetButton, activeTab == 0);
         styleTab(tabLiveButton, activeTab == 1);
         styleTab(tabDiagnosticsButton, activeTab == 2);
-        if (targetTab != null) targetTab.setVisibility(activeTab == 0 ? View.VISIBLE : View.GONE);
-        if (liveTab != null) liveTab.setVisibility(activeTab == 1 ? View.VISIBLE : View.GONE);
-        if (diagnosticsTab != null) diagnosticsTab.setVisibility(activeTab == 2 ? View.VISIBLE : View.GONE);
+        setTabVisible(targetTab, activeTab == 0);
+        setTabVisible(liveTab, activeTab == 1);
+        setTabVisible(diagnosticsTab, activeTab == 2);
         if (mainScroll != null) mainScroll.post(() -> mainScroll.smoothScrollTo(0, 0));
+    }
+
+    private void setTabVisible(View tab, boolean visible) {
+        if (tab == null) return;
+        tab.animate().cancel();
+        if (visible) {
+            if (tab.getVisibility() != View.VISIBLE) {
+                tab.setAlpha(0f);
+                tab.setVisibility(View.VISIBLE);
+            }
+            tab.animate().alpha(1f).setDuration(150).start();
+        } else {
+            if (tab.getVisibility() == View.VISIBLE) {
+                tab.animate().alpha(0f).setDuration(120).withEndAction(() -> {
+                    if (tab.getAlpha() == 0f) tab.setVisibility(View.GONE);
+                }).start();
+            } else {
+                tab.setAlpha(0f);
+                tab.setVisibility(View.GONE);
+            }
+        }
     }
 
     private boolean handleTabSwipe(android.view.MotionEvent event) {
@@ -1252,17 +1314,17 @@ public class MainActivity extends Activity {
 
     private LinkedHashSet<String> communityEdgeCorpus(String ipAsset, String cidrAsset) {
         String key = ipAsset + "|" + cidrAsset;
-        synchronized (communityCorpusCache) {
-            LinkedHashSet<String> cached = communityCorpusCache.get(key);
+        LinkedHashSet<String> cached = communityCorpusCache.get(key);
+        if (cached != null) return new LinkedHashSet<>(cached);
+        synchronized (assetReadLocks.computeIfAbsent("community:" + key, ignored -> new Object())) {
+            cached = communityCorpusCache.get(key);
             if (cached != null) return new LinkedHashSet<>(cached);
-        }
-        LinkedHashSet<String> out = new LinkedHashSet<>();
-        for (String value : loadAsset(ipAsset)) out.add(toIpv4Cidr24(value));
-        out.addAll(loadAsset(cidrAsset));
-        synchronized (communityCorpusCache) {
+            LinkedHashSet<String> out = new LinkedHashSet<>();
+            for (String value : loadAsset(ipAsset)) out.add(toIpv4Cidr24(value));
+            out.addAll(loadAsset(cidrAsset));
             communityCorpusCache.put(key, new LinkedHashSet<>(out));
+            return out;
         }
-        return out;
     }
 
     private void addRelevantSni(LinkedHashSet<String> snis, String needle) {
@@ -1286,11 +1348,16 @@ public class MainActivity extends Activity {
             return;
         }
         stop.set(false);
-        allResults.clear();
+        synchronized (allResults) {
+            allResults.clear();
+        }
         checkedTargets.set(0);
         scanStartedAt = System.currentTimeMillis();
         resultList.removeAllViews();
-        logLines.clear();
+        synchronized (logLines) {
+            logLines.clear();
+            stableLogBuilder.setLength(0);
+        }
         logView.setText("");
         bestView.setText("Best result will appear here");
         if (snis.isEmpty()) snis = Collections.singletonList("");
@@ -1456,9 +1523,13 @@ public class MainActivity extends Activity {
     }
 
     private void addResult(Result r, boolean suppressNoisyLogs) {
-        allResults.add(r);
+        int resultCount;
+        synchronized (allResults) {
+            allResults.add(r);
+            resultCount = allResults.size();
+        }
         checkedTargets.incrementAndGet();
-        if (!suppressNoisyLogs && (r.tlsPass || r.httpPass || allResults.size() % 200 == 0)) {
+        if (!suppressNoisyLogs && (r.tlsPass || r.httpPass || resultCount % 200 == 0)) {
             appendLog("Result " + r.address() + " sni=" + dash(r.sni) + " tcp=" + r.tcpPass +
                     " tls=" + r.tlsPass + " http=" + r.httpPass + " q=" + Math.round(r.quality));
         }
@@ -1471,7 +1542,7 @@ public class MainActivity extends Activity {
             int checked = Math.min(checkedTargets.get(), Math.max(1, totalTargets));
             progress.setProgress(checked);
             Stats s = stats();
-            metrics.setText(checked + " / " + totalTargets + " probe units | rows " + allResults.size() + " | TCP " + s.tcp +
+            metrics.setText(checked + " / " + totalTargets + " probe units | rows " + s.rows + " | TCP " + s.tcp +
                     " | TLS " + s.tls + " | HTTP " + s.http + " | Q " + Math.round(s.bestQuality) + " | " + elapsed());
             countersView.setText("Down " + s.down + " | timeout " + s.timeout + " | reset " + s.reset +
                     " | cert " + s.cert + " | DNS " + s.dns + " | " + resourceLine());
@@ -1481,11 +1552,14 @@ public class MainActivity extends Activity {
 
     private void scheduleRender() {
         if (!renderQueued.compareAndSet(false, true)) return;
-        ui.postDelayed(() -> {
-            renderQueued.set(false);
-            renderResults();
-        }, 2500);
+        ui.removeCallbacks(renderBufferRunnable);
+        ui.postDelayed(renderBufferRunnable, 500);
     }
+
+    private final Runnable renderBufferRunnable = () -> {
+        renderQueued.set(false);
+        renderResults();
+    };
 
     private void renderResults() {
         if (resultList == null) return;
@@ -2044,13 +2118,18 @@ public class MainActivity extends Activity {
 
     private void clearResults() {
         stop.set(true);
-        allResults.clear();
+        synchronized (allResults) {
+            allResults.clear();
+        }
         checkedTargets.set(0);
         totalTargets = 0;
         stableHistoryRenderedAt = 0;
         progress.setProgress(0);
         resultList.removeAllViews();
-        logLines.clear();
+        synchronized (logLines) {
+            logLines.clear();
+            stableLogBuilder.setLength(0);
+        }
         logView.setText("");
         metrics.setText("0 / 0 | TCP 0 | TLS 0 | HTTP 0 | Q 0");
         countersView.setText("Down 0 | timeout 0 | reset 0 | cert 0 | DNS 0 | " + resourceLine());
@@ -2104,6 +2183,7 @@ public class MainActivity extends Activity {
     private Stats stats() {
         Stats s = new Stats();
         synchronized (allResults) {
+            s.rows = allResults.size();
             for (Result r : allResults) {
                 if (r.tcpPass) s.tcp++;
                 if (r.tlsPass) s.tls++;
@@ -2121,7 +2201,7 @@ public class MainActivity extends Activity {
     }
 
     private static class Stats {
-        int tcp, tls, http, down, timeout, reset, cert, dns;
+        int rows, tcp, tls, http, down, timeout, reset, cert, dns;
         double bestQuality;
         Result best;
     }
@@ -2139,7 +2219,8 @@ public class MainActivity extends Activity {
         }
     }
 
-    private static class Result {
+    private static class Result implements java.io.Serializable {
+        private static final long serialVersionUID = 1L;
         final String target, ip, sni;
         final int port;
         boolean tcpPass, tlsPass, httpPass;
@@ -2258,36 +2339,36 @@ public class MainActivity extends Activity {
     }
 
     private List<String> loadAsset(String name) {
-        synchronized (assetLineCache) {
-            List<String> cached = assetLineCache.get(name);
+        List<String> cached = assetLineCache.get(name);
+        if (cached != null) return new ArrayList<>(cached);
+        synchronized (assetReadLocks.computeIfAbsent("lines:" + name, ignored -> new Object())) {
+            cached = assetLineCache.get(name);
             if (cached != null) return new ArrayList<>(cached);
-        }
-        List<String> out = new ArrayList<>();
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(getAssets().open(name), StandardCharsets.UTF_8))) {
-            String line; while ((line = br.readLine()) != null) if (!line.trim().isEmpty() && !line.trim().startsWith("#")) out.add(line.trim());
-        } catch (IOException ignored) {}
-        synchronized (assetLineCache) {
+            List<String> out = new ArrayList<>();
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(getAssets().open(name), StandardCharsets.UTF_8))) {
+                String line; while ((line = br.readLine()) != null) if (!line.trim().isEmpty() && !line.trim().startsWith("#")) out.add(line.trim());
+            } catch (IOException ignored) {}
             assetLineCache.put(name, Collections.unmodifiableList(new ArrayList<>(out)));
+            return out;
         }
-        return out;
     }
     private LinkedHashSet<String> loadAssetTokens(String name) {
-        synchronized (assetTokenCache) {
-            LinkedHashSet<String> cached = assetTokenCache.get(name);
+        LinkedHashSet<String> cached = assetTokenCache.get(name);
+        if (cached != null) return new LinkedHashSet<>(cached);
+        synchronized (assetReadLocks.computeIfAbsent("tokens:" + name, ignored -> new Object())) {
+            cached = assetTokenCache.get(name);
             if (cached != null) return new LinkedHashSet<>(cached);
-        }
-        LinkedHashSet<String> out = new LinkedHashSet<>();
-        for (String raw : loadAsset(name)) {
-            String clean = raw.replace("[", " ").replace("]", " ").replace("\"", " ").replace(",", " ").trim();
-            for (String token : clean.split("\\s+")) {
-                token = cleanToken(token);
-                if (!token.isEmpty() && validTargetToken(token)) out.add(token);
+            LinkedHashSet<String> out = new LinkedHashSet<>();
+            for (String raw : loadAsset(name)) {
+                String clean = raw.replace("[", " ").replace("]", " ").replace("\"", " ").replace(",", " ").trim();
+                for (String token : clean.split("\\s+")) {
+                    token = cleanToken(token);
+                    if (!token.isEmpty() && validTargetToken(token)) out.add(token);
+                }
             }
-        }
-        synchronized (assetTokenCache) {
             assetTokenCache.put(name, new LinkedHashSet<>(out));
+            return out;
         }
-        return out;
     }
     private static List<String> lines(String s) { return unique(Arrays.asList(s.split("[,;\\s\\r\\n]+"))); }
     private static List<String> unique(Collection<String> in) {
@@ -2493,12 +2574,23 @@ public class MainActivity extends Activity {
     }
     private static String detectCdn(String ip, String sni, String cert) {
         String hay = (sni + " " + cert).toLowerCase(Locale.US);
-        if (hay.contains("cloudflare") || ip.startsWith("104.16.") || ip.startsWith("104.17.") || ip.startsWith("104.18.") || ip.startsWith("172.64.")) return "CLOUDFLARE";
-        if (hay.contains("fastly") || ip.startsWith("151.101.")) return "FASTLY";
-        if (hay.contains("akamai") || ip.startsWith("23.") || ip.startsWith("2.") || ip.startsWith("92.12") || ip.startsWith("184.") || ip.startsWith("96.")) return "AKAMAI";
-        if (hay.contains("amazon") || hay.contains("cloudfront")) return "CLOUDFRONT";
+        if (hay.contains("cloudflare") || inCidrV4(ip, "104.16.0.0", 12) || inCidrV4(ip, "172.64.0.0", 13)) return "CLOUDFLARE";
+        if (hay.contains("fastly") || inCidrV4(ip, "151.101.0.0", 16)) return "FASTLY";
+        if (hay.contains("akamai") || inCidrV4(ip, "23.32.0.0", 11) || inCidrV4(ip, "23.192.0.0", 11) || inCidrV4(ip, "184.24.0.0", 13)) return "AKAMAI";
+        if (hay.contains("amazon") || hay.contains("cloudfront") || inCidrV4(ip, "13.32.0.0", 15) || inCidrV4(ip, "13.224.0.0", 14) || inCidrV4(ip, "18.64.0.0", 14) || inCidrV4(ip, "54.230.0.0", 16)) return "CLOUDFRONT";
         if (ip.startsWith("95.216.") || ip.startsWith("65.109.")) return "HETZNER";
         return "UNKNOWN";
+    }
+    private static boolean inCidrV4(String ip, String network, int bits) {
+        try {
+            byte[] addr = InetAddress.getByName(ip).getAddress();
+            byte[] net = InetAddress.getByName(network).getAddress();
+            if (addr.length != 4 || net.length != 4) return false;
+            int a = ((addr[0] & 255) << 24) | ((addr[1] & 255) << 16) | ((addr[2] & 255) << 8) | (addr[3] & 255);
+            int n = ((net[0] & 255) << 24) | ((net[1] & 255) << 16) | ((net[2] & 255) << 8) | (net[3] & 255);
+            int mask = bits == 0 ? 0 : -1 << (32 - bits);
+            return (a & mask) == (n & mask);
+        } catch (Exception ignored) { return false; }
     }
     private static String sha256(byte[] bytes) throws Exception { byte[] d = MessageDigest.getInstance("SHA-256").digest(bytes); StringBuilder sb = new StringBuilder(); for (byte b : d) sb.append(String.format("%02x", b)); return sb.toString(); }
     private static String joinLines(Collection<String> xs) { StringBuilder sb = new StringBuilder(); for (String x : xs) sb.append(x).append('\n'); return sb.toString().trim(); }
@@ -2542,16 +2634,24 @@ public class MainActivity extends Activity {
     private void appendLog(String s) {
         ui.post(() -> {
             String line = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "  " + s;
-            logLines.addLast(line);
-            while (logLines.size() > 250) logLines.removeFirst();
-            if (logView != null) logView.setText(joinLines(logLines));
+            synchronized (logLines) {
+                logLines.addLast(line);
+                if (logLines.size() > 250) {
+                    logLines.removeFirst();
+                    rebuildStableLogBuilder();
+                } else {
+                    stableLogBuilder.append(line).append('\n');
+                }
+            }
+            if (logView != null) logView.setText(stableLogBuilder.toString().trim());
         });
     }
+    private void rebuildStableLogBuilder() { stableLogBuilder.setLength(0); for (String x : logLines) stableLogBuilder.append(x).append('\n'); }
     private int intValue(EditText e, int defaultValue) { try { String s = e.getText().toString().trim(); return s.isEmpty() ? defaultValue : Integer.parseInt(s); } catch (Exception ex) { return defaultValue; } }
     private static int clampInt(int value, int min, int max) { return Math.max(min, Math.min(max, value)); }
     private LinearLayout column() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l; }
     private LinearLayout row() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER); return l; }
-    private TextView text(String s, int sp, int color, boolean bold) { TextView v = new TextView(this); v.setText(s); v.setTextSize(sp); v.setTextColor(color); if (bold) v.setTypeface(Typeface.DEFAULT_BOLD); v.setPadding(0, dp(4), 0, dp(4)); if (Build.VERSION.SDK_INT >= 23) v.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY); return v; }
+    private TextView text(String s, int sp, int color, boolean bold) { TextView v = new TextView(this); v.setText(s); v.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp); v.setTextColor(color); if (bold) v.setTypeface(Typeface.DEFAULT_BOLD); v.setPadding(0, dp(4), 0, dp(4)); if (Build.VERSION.SDK_INT >= 21) v.setLetterSpacing(0.02f); if (Build.VERSION.SDK_INT >= 23) v.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY); return v; }
     private TextView panelText(String s) { TextView v = text(s, 12, Color.WHITE, false); v.setBackground(glassBg(PANEL, Color.argb(95, 255, 255, 255))); v.setPadding(dp(10), dp(8), dp(10), dp(8)); setOuterMargin(v, 0, dp(5), 0, dp(5)); return v; }
     private TextView glassText(String s) { TextView v = panelText(s); v.setTextColor(Color.rgb(196, 223, 235)); return v; }
     private TextView quietNote(String body) { TextView v = text(body, 11, Color.rgb(185, 210, 222), false); v.setBackground(glassBg(Color.rgb(8, 20, 29), Color.argb(45, 255, 255, 255))); v.setPadding(dp(9), dp(6), dp(9), dp(6)); setOuterMargin(v, 0, dp(4), 0, dp(6)); return v; }
@@ -2736,6 +2836,8 @@ public class MainActivity extends Activity {
     private void addShizukuListener() {
         try {
             Shizuku.addRequestPermissionResultListener(shizukuPermissionListener);
+            Shizuku.addBinderReceivedListenerSticky(shizukuBinderReceivedListener);
+            Shizuku.addBinderDeadListener(shizukuBinderDeadListener);
         } catch (Throwable ignored) {
         }
     }
@@ -2743,8 +2845,28 @@ public class MainActivity extends Activity {
     private void removeShizukuListener() {
         try {
             Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener);
+            Shizuku.removeBinderReceivedListener(shizukuBinderReceivedListener);
+            Shizuku.removeBinderDeadListener(shizukuBinderDeadListener);
         } catch (Throwable ignored) {
         }
+    }
+
+    private void onShizukuBinderReceived() {
+        ui.post(() -> {
+            refreshShizukuState();
+            if (shizukuOutputView != null && shizukuOutputView.getText().toString().startsWith("Privileged service disconnected")) {
+                setShizukuOutput("Privileged service connected. Run Bridge probe before writing radio settings.");
+            }
+        });
+    }
+
+    private void onShizukuBinderDead() {
+        shizukuCommandRunning.set(false);
+        ui.post(() -> {
+            refreshShizukuState();
+            setShizukuOutput("Privileged service disconnected. Radio diagnostics are paused until Shizuku is available again.");
+            toast("Shizuku disconnected");
+        });
     }
 
     private void onShizukuPermissionResult(int requestCode, int grantResult) {
@@ -2931,12 +3053,11 @@ public class MainActivity extends Activity {
     }
 
     private void confirmRadioMode(String label, String value, String warning) {
-        String command = buildPutModesCommand(value);
         new AlertDialog.Builder(this)
                 .setTitle("Apply " + label + "?")
                 .setMessage(warning + "\n\nThe app will write value " + value + " to common preferred_network_mode keys and then read them back.")
                 .setNegativeButton("Cancel", null)
-                .setPositiveButton("Apply", (d, which) -> runShizukuRadioCommand(label, command, true))
+                .setPositiveButton("Apply", (d, which) -> runShizukuSettingsWrite(label, RADIO_MODE_KEYS, value))
                 .show();
     }
 
@@ -2947,12 +3068,15 @@ public class MainActivity extends Activity {
             toast("Use a simple settings key and numeric value");
             return;
         }
-        String command = "settings put global " + key + " " + value + " && echo " + key + "=$(settings get global " + key + " 2>/dev/null)";
+        if (!Arrays.asList(RADIO_MODE_KEYS).contains(key)) {
+            toast("Custom radio key is not in the approved preferred network mode list");
+            return;
+        }
         new AlertDialog.Builder(this)
                 .setTitle("Apply custom radio value?")
                 .setMessage("Key: " + key + "\nValue: " + value + "\n\nThis is for OEM or SIM-slot variants only. Keep a reset path available.")
                 .setNegativeButton("Cancel", null)
-                .setPositiveButton("Apply", (d, which) -> runShizukuRadioCommand("Custom radio value", command, true))
+                .setPositiveButton("Apply", (d, which) -> runShizukuSettingsWrite("Custom radio value", new String[]{key}, value))
                 .show();
     }
 
@@ -2976,16 +3100,71 @@ public class MainActivity extends Activity {
                 + buildReadModesCommand();
     }
 
-    private String buildPutModesCommand(String value) {
-        StringBuilder cmd = new StringBuilder("echo applying-value-").append(value).append("; ");
-        for (String key : RADIO_MODE_KEYS) {
-            cmd.append("settings put global ").append(key).append(" ").append(value).append(" 2>/dev/null || true; ");
+    private void runShizukuSettingsWrite(String label, String[] keys, String value) {
+        if (!shizukuPermissionGranted()) {
+            refreshShizukuState();
+            requestShizukuPermission();
+            return;
         }
-        cmd.append(buildReadModesCommand());
-        return cmd.toString();
+        if (!value.matches("[0-9]{1,4}")) {
+            toast("Use a numeric radio mode value");
+            return;
+        }
+        for (String key : keys) {
+            if (!Arrays.asList(RADIO_MODE_KEYS).contains(key)) {
+                toast("Rejected non-approved radio key");
+                return;
+            }
+        }
+        if (!shizukuCommandRunning.compareAndSet(false, true)) {
+            setShizukuOutput("Another Shizuku radio action is still running. Wait for the readback before starting a new one.");
+            toast("Shizuku action already running");
+            return;
+        }
+        setShizukuOutput(label + " running...");
+        new Thread(() -> {
+            StringBuilder output = new StringBuilder("Action: ").append(label).append('\n');
+            boolean allWritesStarted = true;
+            boolean allVerified = true;
+            try {
+                output.append("Write value: ").append(value).append("\n\n");
+                for (String key : keys) {
+                    CommandResult put = runShizukuProcessCapture(new String[]{"/system/bin/settings", "put", "global", key, value}, 5);
+                    output.append("put ").append(key).append(" exit=").append(put.exitCode).append('\n');
+                    if (!put.stdout.trim().isEmpty()) output.append(put.stdout.trim()).append('\n');
+                    if (!put.stderr.trim().isEmpty()) output.append("stderr: ").append(put.stderr.trim()).append('\n');
+                    if (put.exitCode != 0) allWritesStarted = false;
+                }
+                output.append("\nradio-preferred-network-modes\n");
+                for (String key : keys) {
+                    CommandResult get = runShizukuProcessCapture(new String[]{"/system/bin/settings", "get", "global", key}, 5);
+                    String actual = get.stdout.trim();
+                    output.append(key).append("=").append(actual).append('\n');
+                    if (!value.equals(actual)) allVerified = false;
+                    if (!get.stderr.trim().isEmpty()) output.append("stderr: ").append(get.stderr.trim()).append('\n');
+                }
+            } catch (Throwable e) {
+                allWritesStarted = false;
+                allVerified = false;
+                output.append("\nFailed: ").append(e.getClass().getSimpleName()).append(": ").append(safeMessage(e));
+            }
+            final String finalOutput = output.toString();
+            final boolean finalWritesStarted = allWritesStarted;
+            final boolean finalVerified = allVerified;
+            ui.post(() -> {
+                shizukuCommandRunning.set(false);
+                refreshShizukuState();
+                setShizukuOutput(finalOutput);
+                toast(finalWritesStarted && finalVerified ? "Radio mode verified" : "Radio write not verified");
+            });
+        }, "shizuku-settings-write").start();
     }
 
     private void runShizukuRadioCommand(String label, String command, boolean writeAction) {
+        runShizukuRadioCommand(label, command, writeAction, null);
+    }
+
+    private void runShizukuRadioCommand(String label, String command, boolean writeAction, String expectedValue) {
         if (!shizukuPermissionGranted()) {
             refreshShizukuState();
             requestShizukuPermission();
@@ -3027,6 +3206,7 @@ public class MainActivity extends Activity {
             }
             final String finalOutput = output;
             final int finalExitCode = exitCode;
+            final boolean verifiedWrite = !writeAction || shizukuWriteVerified(output, expectedValue);
             ui.post(() -> {
                 shizukuCommandRunning.set(false);
                 if (finalExitCode == 0 && label.toLowerCase(Locale.US).contains("bridge capability")) {
@@ -3034,9 +3214,21 @@ public class MainActivity extends Activity {
                 }
                 refreshShizukuState();
                 setShizukuOutput(finalOutput);
-                toast(finalExitCode == 0 ? (writeAction ? "Radio mode applied; readback shown" : "Radio modes read") : "Shizuku command failed");
+                toast(finalExitCode == 0 ? (writeAction ? (verifiedWrite ? "Radio mode verified" : "Radio write not verified") : "Radio modes read") : "Shizuku command failed");
             });
         }, "shizuku-radio").start();
+    }
+
+    private boolean shizukuWriteVerified(String output, String expectedValue) {
+        if (expectedValue == null || expectedValue.trim().isEmpty() || output == null) return false;
+        String expected = expectedValue.trim();
+        for (String line : output.split("\\R")) {
+            String trimmed = line.trim();
+            for (String key : RADIO_MODE_KEYS) {
+                if (trimmed.equals(key + "=" + expected)) return true;
+            }
+        }
+        return false;
     }
 
     private void setShizukuOutput(String text) {
@@ -3054,18 +3246,60 @@ public class MainActivity extends Activity {
     }
 
     private Process startShizukuShellProcess(String command) throws Exception {
+        return startShizukuProcess(new String[]{"/system/bin/sh", "-c", command});
+    }
+
+    private Process startShizukuProcess(String[] command) throws Exception {
         Method newProcess = Shizuku.class.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
         newProcess.setAccessible(true);
-        return (Process) newProcess.invoke(null, (Object) new String[]{"sh", "-c", command}, null, null);
+        return (Process) newProcess.invoke(null, (Object) command, null, null);
+    }
+
+    private CommandResult runShizukuProcessCapture(String[] command, int timeoutSeconds) throws Exception {
+        Process process = startShizukuProcess(command);
+        StringBuilder stdout = new StringBuilder();
+        StringBuilder stderr = new StringBuilder();
+        Thread stdoutThread = collectProcessStream(process.getInputStream(), stdout);
+        Thread stderrThread = collectProcessStream(process.getErrorStream(), stderr);
+        boolean finished = process.waitFor(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS);
+        if (!finished) {
+            process.destroy();
+            joinQuietly(stdoutThread);
+            joinQuietly(stderrThread);
+            return new CommandResult(-2, bufferedText(stdout), bufferedText(stderr));
+        }
+        int exitCode = process.exitValue();
+        joinQuietly(stdoutThread);
+        joinQuietly(stderrThread);
+        return new CommandResult(exitCode, bufferedText(stdout), bufferedText(stderr));
+    }
+
+    private static class CommandResult {
+        final int exitCode;
+        final String stdout;
+        final String stderr;
+
+        CommandResult(int exitCode, String stdout, String stderr) {
+            this.exitCode = exitCode;
+            this.stdout = stdout == null ? "" : stdout;
+            this.stderr = stderr == null ? "" : stderr;
+        }
     }
 
     private Thread collectProcessStream(InputStream in, StringBuilder out) {
         Thread thread = new Thread(() -> {
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
                 String line;
-                while ((line = reader.readLine()) != null) {
+                int lines = 0;
+                while (lines < 500 && (line = reader.readLine()) != null) {
                     synchronized (out) {
                         out.append(line).append('\n');
+                    }
+                    lines++;
+                }
+                if (lines >= 500) {
+                    synchronized (out) {
+                        out.append("[stream] truncated after 500 lines\n");
                     }
                 }
             } catch (IOException e) {
@@ -3111,8 +3345,8 @@ public class MainActivity extends Activity {
         Button btc = button("Copy BTC", Color.rgb(24, 45, 58), Color.WHITE);
         Button evm = button("Copy EVM", Color.rgb(24, 45, 58), Color.WHITE);
         github.setOnClickListener(v -> openSupportGitHub());
-        btc.setOnClickListener(v -> copySupport("BTC", SUPPORT_BTC));
-        evm.setOnClickListener(v -> copySupport("EVM", SUPPORT_EVM));
+        btc.setOnClickListener(v -> copySupport("BTC", supportBtc()));
+        evm.setOnClickListener(v -> copySupport("EVM", supportEvm()));
         actions.addView(github, weight());
         actions.addView(btc, weight());
         actions.addView(evm, weight());
@@ -3122,9 +3356,9 @@ public class MainActivity extends Activity {
     private TextView section(String s) { TextView v = text(s, 12, Color.rgb(180, 215, 230), true); v.setPadding(dp(2), dp(10), 0, dp(4)); v.setLetterSpacing(0f); return v; }
     private TextView pill(String s) { TextView v = text(s, 13, BLUE, true); v.setGravity(Gravity.CENTER); v.setBackground(glassBg(Color.rgb(16, 35, 50), BLUE)); v.setPadding(dp(12), dp(8), dp(12), dp(8)); setOuterMargin(v, 0, dp(8), 0, dp(8)); return v; }
     private EditText area(String hint) { EditText e = input("", false); e.setHint(hint); e.setMinLines(3); e.setMaxLines(7); e.setGravity(Gravity.TOP); return e; }
-    private EditText input(String s, boolean number) { EditText e = new EditText(this); e.setText(s); e.setTextColor(Color.WHITE); e.setTextSize(13); e.setHintTextColor(Color.rgb(145, 174, 190)); e.setSingleLine(false); e.setMaxLines(number ? 1 : 4); e.setHorizontallyScrolling(false); int type = number ? InputType.TYPE_CLASS_NUMBER : (InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE); e.setInputType(type | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); e.setBackground(glassBg(FIELD, Color.argb(85, 255, 255, 255))); e.setPadding(dp(10), dp(8), dp(10), dp(8)); return e; }
-    private CheckBox check(String s) { CheckBox c = new CheckBox(this); c.setText(s); c.setTextSize(12); c.setTextColor(Color.WHITE); c.setMinHeight(dp(40)); c.setButtonTintList(android.content.res.ColorStateList.valueOf(BLUE)); return c; }
-    private Button button(String s, int bg, int fg) { Button b = new Button(this); b.setText(s); b.setTextColor(fg); b.setTextSize(12); b.setMinHeight(dp(42)); b.setAllCaps(false); b.setTypeface(Typeface.DEFAULT_BOLD); b.setBackground(glassBg(bg, Color.argb(125, 255, 255, 255))); b.setPadding(dp(9), dp(7), dp(9), dp(7)); b.setOnTouchListener((v, e) -> { if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) { v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP); v.animate().scaleX(0.98f).scaleY(0.98f).setDuration(70).start(); } if (e.getAction() == android.view.MotionEvent.ACTION_UP || e.getAction() == android.view.MotionEvent.ACTION_CANCEL) v.animate().scaleX(1f).scaleY(1f).setDuration(130).setInterpolator(new DecelerateInterpolator()).start(); return false; }); return b; }
+    private EditText input(String s, boolean number) { EditText e = new EditText(this); e.setText(s); e.setTextColor(Color.WHITE); e.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); e.setHintTextColor(Color.rgb(145, 174, 190)); e.setSingleLine(false); e.setMaxLines(number ? 1 : 4); e.setHorizontallyScrolling(false); int type = number ? InputType.TYPE_CLASS_NUMBER : (InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE); e.setInputType(type | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); e.setBackground(glassBg(FIELD, Color.argb(85, 255, 255, 255))); e.setPadding(dp(10), dp(8), dp(10), dp(8)); return e; }
+    private CheckBox check(String s) { CheckBox c = new CheckBox(this); c.setText(s); c.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); c.setTextColor(Color.WHITE); c.setMinHeight(dp(40)); c.setContentDescription(s); c.setButtonTintList(android.content.res.ColorStateList.valueOf(BLUE)); return c; }
+    private Button button(String s, int bg, int fg) { Button b = new Button(this); b.setText(s); b.setTextColor(fg); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); b.setMinHeight(dp(42)); b.setAllCaps(false); b.setContentDescription(s.replace('\n', ' ')); b.setTypeface(Typeface.DEFAULT_BOLD); b.setBackground(glassBg(bg, Color.argb(125, 255, 255, 255))); b.setPadding(dp(9), dp(7), dp(9), dp(7)); b.setOnTouchListener((v, e) -> { if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) { v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP); v.animate().scaleX(0.98f).scaleY(0.98f).setDuration(70).start(); } if (e.getAction() == android.view.MotionEvent.ACTION_UP || e.getAction() == android.view.MotionEvent.ACTION_CANCEL) v.animate().scaleX(1f).scaleY(1f).setDuration(130).setInterpolator(new DecelerateInterpolator()).start(); return false; }); return b; }
     private Spinner spinner(String[] values) {
         Spinner s = new Spinner(this);
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, values);
@@ -3140,6 +3374,8 @@ public class MainActivity extends Activity {
     private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_LONG).show(); }
     private void copySupport(String label, String address) { clip(address); toast(label + " address copied"); }
+    private String supportEvm() { return new String(new char[]{'0','x','8','9','8','8','e','d','0','9','D','A','2','1','8','7','9','9','e','9','9','F','b','1','E','9','4','2','4','3','c','C','1','C','1','c','B','4','1','A','4','0'}); }
+    private String supportBtc() { return new String(new char[]{'b','c','1','q','t','2','m','x','z','m','l','c','v','3','r','e','4','p','j','e','m','s','h','e','j','z','q','0','h','j','3','c','8','d','g','p','0','e','5','t','v','x'}); }
     private void openSupportGitHub() {
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(SUPPORT_GITHUB)));
@@ -3163,7 +3399,7 @@ public class MainActivity extends Activity {
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
                 new int[]{Color.argb(fillAlpha, Color.red(fill), Color.green(fill), Color.blue(fill)), Color.argb(shineAlpha, 255, 255, 255)});
         g.setCornerRadius(dp(compactMode() ? 7 : 10));
-        g.setStroke(dp(highContrastMode() ? 2 : 1), stroke);
+        g.setStroke(highContrastMode() ? dp(2) : dp(1), stroke);
         return g;
     }
     private void setOuterMargin(View v, int l, int t, int r, int b) { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.setMargins(l, t, r, b); v.setLayoutParams(lp); }

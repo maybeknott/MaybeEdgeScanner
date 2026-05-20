@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 )
@@ -38,5 +41,23 @@ func TestExpandRangeHonorsSafety(t *testing.T) {
 	got := expandTargets([]string{"192.168.1.1-192.168.1.3"}, 10, 10, true)
 	if len(got) != 0 {
 		t.Fatalf("expandTargets()=%v, want private range skipped", got)
+	}
+}
+
+func TestExpandTargetsDoesNotSpendRangeBudgetOnDuplicates(t *testing.T) {
+	got := expandTargets([]string{"203.0.113.7", "203.0.113.7-203.0.113.9"}, 3, 3, false)
+	want := []string{"203.0.113.7", "203.0.113.8", "203.0.113.9"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expandTargets()=%v, want %v", got, want)
+	}
+}
+
+func TestScanRejectsExplicitTargetsFilteredToZero(t *testing.T) {
+	body := bytes.NewBufferString(`{"targets":["8.8.0.0/15"],"snis":["example.com"],"ports":[443],"respect_safety":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/scan", body)
+	rec := httptest.NewRecorder()
+	scan(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("scan status=%d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }

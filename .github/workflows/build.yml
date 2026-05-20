@@ -250,8 +250,8 @@ jobs:
             echo "No release assets found under dist" >&2
             exit 1
           fi
-          APP_VERSION="$(grep -E "versionName" app/build.gradle | head -n 1 | sed -E "s/.*versionName ['\"]([^'\"]+)['\"].*/\1/")"
-          APP_VERSION_CODE="$(grep -E "versionCode" app/build.gradle | head -n 1 | awk '{print $2}')"
+          APP_VERSION="${ANDROID_VERSION_NAME:-1.0.0}"
+          APP_VERSION_CODE="${ANDROID_VERSION_CODE:-$((20260519 + GITHUB_RUN_NUMBER))}"
           SHORT_SHA="${GITHUB_SHA::7}"
           TAG_NAME="v${APP_VERSION}-${APP_VERSION_CODE}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
           gh release create "$TAG_NAME" "${ASSETS[@]}" \

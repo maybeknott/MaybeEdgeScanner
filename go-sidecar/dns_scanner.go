@@ -17,12 +17,14 @@ import (
 )
 
 type dnsScanRequest struct {
-	Resolvers []string `json:"resolvers"`
-	Domains   []string `json:"domains"`
-	QTypes    []string `json:"qtypes"`
-	TimeoutMS int      `json:"timeout_ms"`
-	Workers   int      `json:"workers"`
-	Samples   int      `json:"samples"`
+	Resolvers     []string `json:"resolvers"`
+	Domains       []string `json:"domains"`
+	QTypes        []string `json:"qtypes"`
+	TimeoutMS     int      `json:"timeout_ms"`
+	Workers       int      `json:"workers"`
+	Samples       int      `json:"samples"`
+	RatePerSecond int      `json:"rate_per_second"`
+	JitterMS      int      `json:"jitter_ms"`
 }
 
 type dnsResult struct {
@@ -67,13 +69,17 @@ func scanDNS(w http.ResponseWriter, r *http.Request) {
 	flusher, _ := w.(http.Flusher)
 	enc := json.NewEncoder(w)
 	total := len(req.Resolvers) * len(req.Domains) * len(req.QTypes) * req.Samples
-	_ = enc.Encode(map[string]any{"type": "init", "total": total})
+	if err := enc.Encode(map[string]any{"type": "init", "total": total}); err != nil {
+		cancel()
+		return
+	}
 	flush(flusher)
 
 	jobs := make(chan dnsJob)
-	results := make(chan dnsResult)
+	results := make(chan dnsResult, req.Workers)
 	var done atomic.Int64
 	var wg sync.WaitGroup
+	limiter := newRateLimiter(req.RatePerSecond)
 	for i := 0; i < req.Workers; i++ {
 		wg.Add(1)
 		go func() {
@@ -82,7 +88,13 @@ func scanDNS(w http.ResponseWriter, r *http.Request) {
 				if ctx.Err() != nil {
 					return
 				}
-				results <- runDNSQuery(ctx, job, req.TimeoutMS)
+				waitRate(ctx, limiter, req.JitterMS)
+				res := runDNSQuery(ctx, job, req.TimeoutMS)
+				select {
+				case <-ctx.Done():
+					return
+				case results <- res:
+				}
 			}
 		}()
 	}
@@ -105,10 +117,16 @@ func scanDNS(w http.ResponseWriter, r *http.Request) {
 	go func() { wg.Wait(); close(results) }()
 	for res := range results {
 		checked := done.Add(1)
-		_ = enc.Encode(map[string]any{"type": "dns", "result": res, "checked": checked, "total": total})
+		if err := enc.Encode(map[string]any{"type": "dns", "result": res, "checked": checked, "total": total}); err != nil {
+			cancel()
+			return
+		}
 		flush(flusher)
 	}
-	_ = enc.Encode(map[string]any{"type": "done", "stopped": ctx.Err() != nil})
+	if err := enc.Encode(map[string]any{"type": "done", "stopped": ctx.Err() != nil}); err != nil {
+		cancel()
+		return
+	}
 	flush(flusher)
 }
 
@@ -146,11 +164,16 @@ func (r *dnsScanRequest) normalize() {
 	if r.Samples <= 0 || r.Samples > 20 {
 		r.Samples = 1
 	}
+	if r.RatePerSecond < 0 {
+		r.RatePerSecond = 0
+	}
+	if r.JitterMS < 0 {
+		r.JitterMS = 0
+	}
 }
 
 func runDNSQuery(ctx context.Context, job dnsJob, timeoutMS int) dnsResult {
 	res := dnsResult{Resolver: job.resolver, Domain: job.domain, QType: job.qtype, Protocol: "udp", Vendor: dnsVendor(job.resolver)}
-	start := time.Now()
 	qtype := dns.StringToType[strings.ToUpper(job.qtype)]
 	if qtype == 0 {
 		res.Error = "unsupported query type"
@@ -160,43 +183,35 @@ func runDNSQuery(ctx context.Context, job dnsJob, timeoutMS int) dnsResult {
 	msg.SetQuestion(dns.Fqdn(job.domain), qtype)
 	msg.RecursionDesired = true
 	msg.SetEdns0(4096, true)
-	client := &dns.Client{Net: "udp", Timeout: time.Duration(timeoutMS) * time.Millisecond}
-	done := make(chan struct {
-		msg *dns.Msg
-		rtt time.Duration
-		err error
-	}, 1)
-	go func() {
-		in, rtt, err := client.Exchange(msg, job.resolver)
-		done <- struct {
-			msg *dns.Msg
-			rtt time.Duration
-			err error
-		}{msg: in, rtt: rtt, err: err}
-	}()
-	select {
-	case <-ctx.Done():
+	client := &dns.Client{
+		Net:     "udp",
+		Timeout: time.Duration(timeoutMS) * time.Millisecond,
+		Dialer: &net.Dialer{
+			LocalAddr: &net.UDPAddr{IP: net.IPv4zero, Port: 0},
+			Timeout:   time.Duration(timeoutMS) * time.Millisecond,
+		},
+	}
+	in, rtt, err := client.ExchangeContext(ctx, msg, job.resolver)
+	if ctx.Err() != nil {
 		res.Error = ctx.Err().Error()
-		res.LatencyMS = time.Since(start).Milliseconds()
-		res.Health = scoreDNS(res)
-		return res
-	case reply := <-done:
-		res.LatencyMS = reply.rtt.Milliseconds()
-		if reply.err != nil {
-			res.Error = reply.err.Error()
-			res.Health = scoreDNS(res)
-			return res
-		}
-		parsed := parseDNSMessage(reply.msg)
-		res.Answers = parsed.answers
-		res.RCode = parsed.rcode
-		res.Recursive = parsed.ra
-		res.Authoritative = parsed.aa
-		res.DNSSEC = parsed.ad
-		res.EDNS = parsed.edns
 		res.Health = scoreDNS(res)
 		return res
 	}
+	res.LatencyMS = rtt.Milliseconds()
+	if err != nil {
+		res.Error = err.Error()
+		res.Health = scoreDNS(res)
+		return res
+	}
+	parsed := parseDNSMessage(in)
+	res.Answers = parsed.answers
+	res.RCode = parsed.rcode
+	res.Recursive = parsed.ra
+	res.Authoritative = parsed.aa
+	res.DNSSEC = parsed.ad
+	res.EDNS = parsed.edns
+	res.Health = scoreDNS(res)
+	return res
 }
 
 type parsedDNS struct {
