@@ -189,6 +189,7 @@ func grafanaDashboard(w http.ResponseWriter, _ *http.Request) {
 }
 
 func scan(w http.ResponseWriter, r *http.Request) {
+	var serial uint64
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
@@ -227,7 +228,7 @@ func scan(w http.ResponseWriter, r *http.Request) {
 		activeCancel()
 	}
 	activeSerial++
-	serial := activeSerial
+	serial = activeSerial
 	activeCancel = cancel
 	activeCancelMu.Unlock()
 	defer func() {
