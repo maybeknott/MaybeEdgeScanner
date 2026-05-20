@@ -510,6 +510,7 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 		res.IP = ip
 		res.CDN = detectCDN(ip, sni, "")
 		var tlsAttempted bool
+		var anyTCPOK bool
 		for _, candidateSNI := range snis {
 			if ctx.Err() != nil {
 				break
@@ -517,7 +518,10 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 			fingerprint := chooseTLSFingerprint(req.TLSFingerprint)
 			tlsAttempted = true
 			start := time.Now()
-			conn, tlsInfo, tlsOK := tlsProbeOpen(ctx, ip, port, candidateSNI, req.TimeoutMS, fingerprint)
+			conn, tcpOK, tlsInfo, tlsOK := tlsProbeOpen(ctx, ip, port, candidateSNI, req.TimeoutMS, fingerprint)
+			if tcpOK {
+				anyTCPOK = true
+			}
 			if tlsOK {
 				res.TCP = true
 				res.LatencyMS = time.Since(start).Milliseconds()
@@ -537,7 +541,10 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 				break
 			}
 		}
-		if !res.TLS && tlsAttempted {
+		if anyTCPOK {
+			res.TCP = true
+		}
+		if !res.TLS && tlsAttempted && !anyTCPOK {
 			start := time.Now()
 			res.TCP = tcp(ctx, ip, port, req.TimeoutMS)
 			res.LatencyMS = time.Since(start).Milliseconds()
@@ -618,7 +625,11 @@ func uniqueInOrder(xs []string) []string {
 
 func tcp(ctx context.Context, ip string, port int, timeoutMS int) bool {
 	d := net.Dialer{Timeout: time.Duration(timeoutMS) * time.Millisecond}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+	network := "tcp4"
+	if strings.Contains(ip, ":") {
+		network = "tcp6"
+	}
+	conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip, strconv.Itoa(port)))
 	if err != nil {
 		return false
 	}
@@ -635,17 +646,17 @@ type tlsInfo struct {
 }
 
 func tlsProbe(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (tlsInfo, bool) {
-	conn, info, ok := tlsProbeOpen(ctx, ip, port, sni, timeoutMS, fingerprint)
+	conn, _, info, ok := tlsProbeOpen(ctx, ip, port, sni, timeoutMS, fingerprint)
 	if conn != nil {
 		_ = conn.Close()
 	}
 	return info, ok
 }
 
-func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (*tls.UConn, tlsInfo, bool) {
-	conn, err := dialUTLS(ctx, ip, port, sni, timeoutMS, fingerprint)
+func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (*tls.UConn, bool, tlsInfo, bool) {
+	conn, tcpOK, err := dialUTLS(ctx, ip, port, sni, timeoutMS, fingerprint)
 	if err != nil {
-		return nil, tlsInfo{}, false
+		return nil, tcpOK, tlsInfo{}, false
 	}
 	state := conn.ConnectionState()
 	info := tlsInfo{Version: tlsVersionName(state.Version), Cipher: cipherSuiteName(state.CipherSuite), ALPN: state.NegotiatedProtocol}
@@ -670,13 +681,13 @@ func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutM
 	}
 	if ctx.Err() != nil {
 		_ = conn.Close()
-		return nil, info, false
+		return nil, true, info, false
 	}
-	return conn, info, true
+	return conn, true, info, true
 }
 
 func httpProbe(ctx context.Context, ip string, port int, sni, path string, timeoutMS int, fingerprint string) (bool, int, string, string, string, bool) {
-	conn, err := dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"http/1.1"})
+	conn, _, err := dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"http/1.1"})
 	if err != nil {
 		return false, 0, "", "", "", false
 	}
@@ -689,7 +700,7 @@ func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path stri
 	if host == "" {
 		host = ip
 	}
-	if _, err := fmt.Fprintf(conn, "HEAD %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: MaybeEdgeScanner/1.2\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nX-Maybe-Cachebuster: %d\r\nConnection: close\r\n\r\n", path, host, time.Now().UnixNano()); err != nil {
+	if _, err := fmt.Fprintf(conn, "HEAD %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: MaybeScanner/1.2\r\nCache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\nX-Maybe-Cachebuster: %d\r\nConnection: close\r\n\r\n", path, host, time.Now().UnixNano()); err != nil {
 		return false, 0, "", "", "", false
 	}
 	reader := pooledReader(io.LimitReader(conn, 64*1024))
@@ -735,15 +746,19 @@ func readHTTPHeaders(reader *bufio.Reader, maxLines int) []string {
 	return headers
 }
 
-func dialUTLS(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (*tls.UConn, error) {
+func dialUTLS(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (*tls.UConn, bool, error) {
 	return dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"h2", "http/1.1"})
 }
 
-func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, nextProtos []string) (*tls.UConn, error) {
+func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, nextProtos []string) (*tls.UConn, bool, error) {
 	d := net.Dialer{Timeout: time.Duration(timeoutMS) * time.Millisecond}
-	rawConn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+	network := "tcp4"
+	if strings.Contains(ip, ":") {
+		network = "tcp6"
+	}
+	rawConn, err := d.DialContext(ctx, network, net.JoinHostPort(ip, strconv.Itoa(port)))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
 	_ = rawConn.SetDeadline(deadline)
@@ -765,15 +780,15 @@ func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, time
 	if err := conn.Handshake(); err != nil {
 		close(done)
 		_ = rawConn.Close()
-		return nil, err
+		return nil, true, err
 	}
 	close(done)
 	if err := ctx.Err(); err != nil {
 		_ = conn.Close()
-		return nil, err
+		return nil, true, err
 	}
 	_ = conn.SetDeadline(deadline)
-	return conn, nil
+	return conn, true, nil
 }
 
 func normalizeTLSFingerprint(v string) string {

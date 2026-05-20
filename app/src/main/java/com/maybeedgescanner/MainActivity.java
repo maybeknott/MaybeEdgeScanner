@@ -76,7 +76,7 @@ public class MainActivity extends Activity {
     private final AtomicBoolean renderQueued = new AtomicBoolean(false);
     private final AtomicBoolean shizukuCommandRunning = new AtomicBoolean(false);
     private final AtomicInteger checkedTargets = new AtomicInteger(0);
-    private final List<Result> allResults = Collections.synchronizedList(new ArrayList<>());
+    private final List<Result> allResults = new CopyOnWriteArrayList<>();
     private final ConcurrentHashMap<String, List<String>> assetLineCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, LinkedHashSet<String>> assetTokenCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, LinkedHashSet<String>> communityCorpusCache = new ConcurrentHashMap<>();
