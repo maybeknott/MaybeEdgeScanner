@@ -253,7 +253,8 @@ jobs:
           APP_VERSION="${ANDROID_VERSION_NAME:-1.0.0}"
           APP_VERSION_CODE="${ANDROID_VERSION_CODE:-$((20260519 + GITHUB_RUN_NUMBER))}"
           SHORT_SHA="${GITHUB_SHA::7}"
-          TAG_NAME="v${APP_VERSION}-${APP_VERSION_CODE}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
+          TIMESTAMP_STAMP="$(date +'%Y%m%d%H%M%S')"
+          TAG_NAME="v${APP_VERSION}-${APP_VERSION_CODE}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}-${TIMESTAMP_STAMP}"
           gh release create "$TAG_NAME" "${ASSETS[@]}" \
             --target "$GITHUB_SHA" \
             --title "MaybeEdgeScanner ${APP_VERSION} (${APP_VERSION_CODE})" \

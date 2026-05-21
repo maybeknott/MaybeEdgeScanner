@@ -48,6 +48,8 @@ type scanRequest struct {
 	JitterMS       int      `json:"jitter_ms"`
 	RespectSafety  bool     `json:"respect_safety"`
 	TLSFingerprint string   `json:"tls_fingerprint"`
+	EnablePayloadSplitting bool `json:"enable_payload_splitting"`
+	SplitByteBoundary      int  `json:"split_byte_boundary"`
 }
 
 type result struct {
@@ -106,7 +108,140 @@ var (
 	safetyCIDRPrefixes   = loadSafetyPrefixes()
 )
 
+type DPIObfuscationOptions struct {
+	EnablePayloadSplitting bool `json:"enable_payload_splitting"`
+	SplitByteBoundary      int  `json:"split_byte_boundary"`
+}
+
+type ObfuscatedConn struct {
+	net.Conn
+	SplitBoundary int
+}
+
+func (c *ObfuscatedConn) Write(b []byte) (int, error) {
+	if len(b) > c.SplitBoundary {
+		n1, err := c.Conn.Write(b[:c.SplitBoundary])
+		if err != nil {
+			return n1, err
+		}
+		time.Sleep(50 * time.Microsecond)
+		n2, err := c.Conn.Write(b[c.SplitBoundary:])
+		return n1 + n2, err
+	}
+	return c.Conn.Write(b)
+}
+
+func DialObfuscatedSocket(ctx context.Context, network, addr string, timeout time.Duration, opts DPIObfuscationOptions) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: timeout}
+	rawConn, err := dialer.DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	if opts.EnablePayloadSplitting && opts.SplitByteBoundary > 0 {
+		return &ObfuscatedConn{Conn: rawConn, SplitBoundary: opts.SplitByteBoundary}, nil
+	}
+	return rawConn, nil
+}
+
+type RadixNode struct {
+	Prefix  *netip.Prefix
+	Payload string
+	Left    *RadixNode
+	Right   *RadixNode
+}
+
+type CorporateNetworkIndex struct {
+	sync.RWMutex
+	RootNode *RadixNode
+}
+
+var cdnIndex = &CorporateNetworkIndex{}
+
+func (cni *CorporateNetworkIndex) Insert(prefix netip.Prefix, payload string) {
+	cni.Lock()
+	defer cni.Unlock()
+	cni.RootNode = insertNode(cni.RootNode, prefix, payload, 0)
+}
+
+func insertNode(node *RadixNode, prefix netip.Prefix, payload string, bitIndex int) *RadixNode {
+	if node == nil {
+		node = &RadixNode{}
+	}
+	if bitIndex == prefix.Bits() {
+		p := prefix
+		node.Prefix = &p
+		node.Payload = payload
+		return node
+	}
+	bit := getBit(prefix.Addr(), bitIndex)
+	if bit == 0 {
+		node.Left = insertNode(node.Left, prefix, payload, bitIndex+1)
+	} else {
+		node.Right = insertNode(node.Right, prefix, payload, bitIndex+1)
+	}
+	return node
+}
+
+func (cni *CorporateNetworkIndex) MatchLongestPrefix(addr netip.Addr) (string, bool) {
+	cni.RLock()
+	defer cni.RUnlock()
+	var bestPayload string
+	var found bool
+	curr := cni.RootNode
+	for bitIndex := 0; curr != nil; bitIndex++ {
+		if curr.Prefix != nil && curr.Prefix.Contains(addr) {
+			bestPayload = curr.Payload
+			found = true
+		}
+		if bitIndex >= addr.BitLen() {
+			break
+		}
+		bit := getBit(addr, bitIndex)
+		if bit == 0 {
+			curr = curr.Left
+		} else {
+			curr = curr.Right
+		}
+	}
+	return bestPayload, found
+}
+
+func getBit(addr netip.Addr, bitIndex int) int {
+	bytes := addr.AsSlice()
+	byteIdx := bitIndex / 8
+	bitIdx := 7 - (bitIndex % 8)
+	if byteIdx >= len(bytes) {
+		return 0
+	}
+	return int((bytes[byteIdx] >> bitIdx) & 1)
+}
+
+func initCDNIndex() {
+	cdns := map[string][]string{
+		"cloudflare": {
+			"104.16.0.0/12", "172.64.0.0/13", "2606:4700::/32",
+		},
+		"fastly": {
+			"151.101.0.0/16", "2a04:4e42::/32",
+		},
+		"cloudfront": {
+			"13.32.0.0/15", "13.224.0.0/14", "18.64.0.0/14", "54.230.0.0/16",
+		},
+		"akamai": {
+			"23.32.0.0/11", "23.192.0.0/11", "184.24.0.0/13", "2a02:26f0::/32",
+		},
+	}
+	for payload, cidrs := range cdns {
+		for _, cidr := range cidrs {
+			if prefix, err := netip.ParsePrefix(cidr); err == nil {
+				cdnIndex.Insert(prefix, payload)
+			}
+		}
+	}
+}
+
 func main() {
+	initCDNIndex()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", index)
 	mux.HandleFunc("/grafana-dashboard.json", grafanaDashboard)
@@ -259,6 +394,7 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	var down atomic.Int64
 
 	limiter := newRateLimiter(req.RatePerSecond)
+	recentErrors := newErrorRingBuffer(64)
 	for start, batchNo := 0, 1; start < len(targets) && ctx.Err() == nil; start, batchNo = start+req.BatchSize, batchNo+1 {
 		end := min(len(targets), start+req.BatchSize)
 		jobs := make(chan string)
@@ -276,6 +412,14 @@ func scan(w http.ResponseWriter, r *http.Request) {
 						if ctx.Err() != nil {
 							return
 						}
+						if backoffDelay := globalBackoffNS.Load(); backoffDelay > 0 {
+							select {
+							case <-ctx.Done():
+								return
+							case <-time.After(time.Duration(backoffDelay)):
+								globalBackoffNS.Store(0)
+							}
+						}
 						waitRate(ctx, limiter, req.JitterMS)
 						res := probe(ctx, t, port, req, batchNo)
 						select {
@@ -290,14 +434,6 @@ func scan(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			defer close(jobs)
 			for _, t := range targets[start:end] {
-				if delay := globalBackoffNS.Load(); delay > 0 {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(time.Duration(delay)):
-						globalBackoffNS.Store(0)
-					}
-				}
 				select {
 				case <-ctx.Done():
 					return
@@ -306,7 +442,6 @@ func scan(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 		go func() { wg.Wait(); close(results) }()
-		recentErrors := newErrorRingBuffer(64)
 		for res := range results {
 			c := int(checked.Add(1))
 			metricScanResults.Add(1)
@@ -519,7 +654,7 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 			fingerprint := chooseTLSFingerprint(req.TLSFingerprint)
 			tlsAttempted = true
 			start := time.Now()
-			conn, tcpOK, tlsInfo, tlsOK := tlsProbeOpen(ctx, ip, port, candidateSNI, req.TimeoutMS, fingerprint)
+			conn, tcpOK, tlsInfo, tlsOK := tlsProbeOpen(ctx, ip, port, candidateSNI, req.TimeoutMS, fingerprint, DPIObfuscationOptions{EnablePayloadSplitting: req.EnablePayloadSplitting, SplitByteBoundary: req.SplitByteBoundary})
 			if tcpOK {
 				anyTCPOK = true
 			}
@@ -536,7 +671,7 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 				res.CertSubject = tlsInfo.Subject
 				res.CDN = detectCDN(ip, candidateSNI, tlsInfo.Subject)
 				if req.HTTPProbe {
-					res.HTTP, res.HTTPStatus, res.ServerHeader, res.CacheHeader, res.AltSvc, res.HTTP3Hint = httpProbeConn(ctx, conn, ip, candidateSNI, req.HTTPPath)
+					res.HTTP, res.HTTPStatus, res.ServerHeader, res.CacheHeader, res.AltSvc, res.HTTP3Hint = httpProbeConn(ctx, conn, ip, candidateSNI, req.HTTPPath, req.TimeoutMS)
 				}
 				_ = conn.Close()
 				break
@@ -646,16 +781,16 @@ type tlsInfo struct {
 	Subject  string
 }
 
-func tlsProbe(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (tlsInfo, bool) {
-	conn, _, info, ok := tlsProbeOpen(ctx, ip, port, sni, timeoutMS, fingerprint)
+func tlsProbe(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, opts DPIObfuscationOptions) (tlsInfo, bool) {
+	conn, _, info, ok := tlsProbeOpen(ctx, ip, port, sni, timeoutMS, fingerprint, opts)
 	if conn != nil {
 		_ = conn.Close()
 	}
 	return info, ok
 }
 
-func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (*tls.UConn, bool, tlsInfo, bool) {
-	conn, tcpOK, err := dialUTLS(ctx, ip, port, sni, timeoutMS, fingerprint)
+func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, opts DPIObfuscationOptions) (*tls.UConn, bool, tlsInfo, bool) {
+	conn, tcpOK, err := dialUTLS(ctx, ip, port, sni, timeoutMS, fingerprint, opts)
 	if err != nil {
 		return nil, tcpOK, tlsInfo{}, false
 	}
@@ -669,14 +804,14 @@ func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutM
 				verifyName = host
 			}
 		}
-		opts := x509.VerifyOptions{
+		optsVerify := x509.VerifyOptions{
 			DNSName:       verifyName,
 			Intermediates: x509.NewCertPool(),
 		}
 		for _, cert := range state.PeerCertificates[1:] {
-			opts.Intermediates.AddCert(cert)
+			optsVerify.Intermediates.AddCert(cert)
 		}
-		_, verifyErr := state.PeerCertificates[0].Verify(opts)
+		_, verifyErr := state.PeerCertificates[0].Verify(optsVerify)
 		info.Verified = verifyErr == nil
 		info.Subject = state.PeerCertificates[0].Subject.String()
 	}
@@ -688,15 +823,18 @@ func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutM
 }
 
 func httpProbe(ctx context.Context, ip string, port int, sni, path string, timeoutMS int, fingerprint string) (bool, int, string, string, string, bool) {
-	conn, _, err := dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"http/1.1"})
+	conn, _, err := dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"http/1.1"}, DPIObfuscationOptions{})
 	if err != nil {
 		return false, 0, "", "", "", false
 	}
 	defer conn.Close()
-	return httpProbeConn(ctx, conn, ip, sni, path)
+	return httpProbeConn(ctx, conn, ip, sni, path, timeoutMS)
 }
 
-func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path string) (bool, int, string, string, string, bool) {
+func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path string, timeoutMS int) (bool, int, string, string, string, bool) {
+	rollingDeadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
+	_ = conn.SetDeadline(rollingDeadline)
+
 	host := strings.TrimSpace(sni)
 	if host == "" {
 		host = ip
@@ -706,58 +844,50 @@ func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path stri
 	}
 	reader := pooledReader(io.LimitReader(conn, 64*1024))
 	defer putReader(reader)
+
+	_ = conn.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
 	line, err := readLimitedLine(reader, 4096)
 	status := parseHTTPStatus(line)
 	server, cache, altSvc := "", "", ""
-	for _, header := range readHTTPHeaders(reader, 48) {
-		lower := strings.ToLower(header)
-		if strings.HasPrefix(lower, "server:") {
-			server = strings.TrimSpace(header[len("server:"):])
-		}
-		if strings.HasPrefix(lower, "x-cache:") || strings.HasPrefix(lower, "cf-cache-status:") || strings.HasPrefix(lower, "age:") {
-			if cache != "" {
-				cache += "; "
+	if err == nil && status > 0 {
+		for i := 0; i < 48; i++ {
+			_ = conn.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
+			header, hErr := readLimitedLine(reader, 4096)
+			if hErr != nil {
+				break
 			}
-			cache += strings.TrimSpace(header)
-		}
-		if strings.HasPrefix(lower, "alt-svc:") {
-			altSvc = strings.TrimSpace(header[len("alt-svc:"):])
+			header = strings.TrimRight(header, "\r\n")
+			if strings.TrimSpace(header) == "" {
+				break
+			}
+			lower := strings.ToLower(header)
+			if strings.HasPrefix(lower, "server:") {
+				server = strings.TrimSpace(header[len("server:"):])
+			}
+			if strings.HasPrefix(lower, "x-cache:") || strings.HasPrefix(lower, "cf-cache-status:") || strings.HasPrefix(lower, "age:") {
+				if cache != "" {
+					cache += "; "
+				}
+				cache += strings.TrimSpace(header)
+			}
+			if strings.HasPrefix(lower, "alt-svc:") {
+				altSvc = strings.TrimSpace(header[len("alt-svc:"):])
+			}
 		}
 	}
 	return ctx.Err() == nil && err == nil && status > 0 && status < 500, status, server, cache, altSvc, strings.Contains(strings.ToLower(altSvc), "h3")
 }
 
-func readHTTPHeaders(reader *bufio.Reader, maxLines int) []string {
-	var headers []string
-	for i := 0; i < maxLines; i++ {
-		line, err := readLimitedLine(reader, 4096)
-		if err != nil {
-			break
-		}
-		line = strings.TrimRight(line, "\r\n")
-		if strings.TrimSpace(line) == "" {
-			break
-		}
-		if len(headers) > 0 && (strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")) {
-			headers[len(headers)-1] += " " + strings.TrimSpace(line)
-			continue
-		}
-		headers = append(headers, line)
-	}
-	return headers
+func dialUTLS(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, opts DPIObfuscationOptions) (*tls.UConn, bool, error) {
+	return dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"h2", "http/1.1"}, opts)
 }
 
-func dialUTLS(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string) (*tls.UConn, bool, error) {
-	return dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"h2", "http/1.1"})
-}
-
-func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, nextProtos []string) (*tls.UConn, bool, error) {
-	d := net.Dialer{Timeout: time.Duration(timeoutMS) * time.Millisecond}
+func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, nextProtos []string, opts DPIObfuscationOptions) (*tls.UConn, bool, error) {
 	network := "tcp4"
 	if strings.Contains(ip, ":") {
 		network = "tcp6"
 	}
-	rawConn, err := d.DialContext(ctx, network, net.JoinHostPort(ip, strconv.Itoa(port)))
+	rawConn, err := DialObfuscatedSocket(ctx, network, net.JoinHostPort(ip, strconv.Itoa(port)), time.Duration(timeoutMS)*time.Millisecond, opts)
 	if err != nil {
 		return nil, false, err
 	}
@@ -791,6 +921,8 @@ func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, time
 	_ = conn.SetDeadline(deadline)
 	return conn, true, nil
 }
+
+
 
 func normalizeTLSFingerprint(v string) string {
 	switch strings.ToLower(strings.TrimSpace(v)) {
@@ -891,15 +1023,8 @@ func score(r result) int {
 
 func detectCDN(ip, sni, cert string) string {
 	if addr, err := netip.ParseAddr(ip); err == nil {
-		switch {
-		case prefixContains(addr, "104.16.0.0/12") || prefixContains(addr, "172.64.0.0/13") || prefixContains(addr, "2606:4700::/32"):
-			return "cloudflare"
-		case prefixContains(addr, "151.101.0.0/16") || prefixContains(addr, "2a04:4e42::/32"):
-			return "fastly"
-		case prefixContains(addr, "13.32.0.0/15") || prefixContains(addr, "13.224.0.0/14") || prefixContains(addr, "18.64.0.0/14") || prefixContains(addr, "54.230.0.0/16"):
-			return "cloudfront"
-		case prefixContains(addr, "23.32.0.0/11") || prefixContains(addr, "23.192.0.0/11") || prefixContains(addr, "184.24.0.0/13") || prefixContains(addr, "2a02:26f0::/32"):
-			return "akamai"
+		if cdn, ok := cdnIndex.MatchLongestPrefix(addr); ok {
+			return cdn
 		}
 	}
 	host := strings.ToLower(sni + " " + cert)
@@ -915,11 +1040,6 @@ func detectCDN(ip, sni, cert string) string {
 	default:
 		return "unknown"
 	}
-}
-
-func prefixContains(addr netip.Addr, cidr string) bool {
-	prefix, err := netip.ParsePrefix(cidr)
-	return err == nil && prefix.Contains(addr)
 }
 
 func tlsVersionName(v uint16) string {
@@ -964,23 +1084,27 @@ func loadLines(name string) []string {
 }
 
 func expandTargets(raw []string, capCount int, maxCIDRHosts int, respectSafety bool) []string {
-	set := make(map[string]bool)
+	set := make(map[[16]byte]bool)
 	var out []string
 	for _, item := range raw {
-		for _, expanded := range expandOne(strings.TrimSpace(item), min(maxCIDRHosts, capCount-len(out)), respectSafety, set) {
-			if expanded != "" && !set[expanded] {
-				set[expanded] = true
-				out = append(out, expanded)
-				if len(out) >= capCount {
-					return out
+		quotaRemaining := capCount - len(out)
+		if quotaRemaining <= 0 {
+			break
+		}
+		for _, expanded := range expandOneStateful(strings.TrimSpace(item), min(maxCIDRHosts, quotaRemaining), respectSafety, set) {
+			if expanded != "" {
+				addr, err := netip.ParseAddr(expanded)
+				if err == nil {
+					set[addr.As16()] = true
 				}
+				out = append(out, expanded)
 			}
 		}
 	}
 	return out
 }
 
-func expandOne(s string, remaining int, respectSafety bool, seen map[string]bool) []string {
+func expandOneStateful(s string, remaining int, respectSafety bool, seen map[[16]byte]bool) []string {
 	if remaining <= 0 || s == "" {
 		return nil
 	}
@@ -988,9 +1112,17 @@ func expandOne(s string, remaining int, respectSafety bool, seen map[string]bool
 		return expandRange(s, remaining, respectSafety, seen)
 	}
 	if !strings.Contains(s, "/") {
-		if respectSafety && isReservedOrUnsafe(s) {
+		addr, err := netip.ParseAddr(s)
+		if err != nil {
 			return nil
 		}
+		if seen[addr.As16()] {
+			return nil
+		}
+		if respectSafety && isReservedOrUnsafe(addr) {
+			return nil
+		}
+		seen[addr.As16()] = true
 		return []string{s}
 	}
 	prefix, err := netip.ParsePrefix(s)
@@ -1012,13 +1144,13 @@ func expandOne(s string, remaining int, respectSafety bool, seen map[string]bool
 		if current.Is4() && hostBits > 1 && !prefix.Contains(current.Next()) {
 			break
 		}
-		text := current.String()
-		if seen[text] {
+		if seen[current.As16()] {
 			current = current.Next()
 			continue
 		}
-		if !respectSafety || !isReservedOrUnsafe(text) {
-			out = append(out, text)
+		seen[current.As16()] = true
+		if !respectSafety || !isReservedOrUnsafe(current) {
+			out = append(out, current.String())
 		} else {
 			metricSafetySkipped.Add(1)
 		}
@@ -1027,7 +1159,7 @@ func expandOne(s string, remaining int, respectSafety bool, seen map[string]bool
 	return out
 }
 
-func expandRange(s string, remaining int, respectSafety bool, seen map[string]bool) []string {
+func expandRange(s string, remaining int, respectSafety bool, seen map[[16]byte]bool) []string {
 	parts := strings.SplitN(s, "-", 2)
 	if len(parts) != 2 || remaining <= 0 {
 		return nil
@@ -1045,12 +1177,12 @@ func expandRange(s string, remaining int, respectSafety bool, seen map[string]bo
 	}
 	var out []string
 	for current := start; current.IsValid() && current.Compare(end) <= 0 && len(out) < remaining; current = current.Next() {
-		text := current.String()
-		if seen[text] {
+		if seen[current.As16()] {
 			continue
 		}
-		if !respectSafety || !isReservedOrUnsafe(text) {
-			out = append(out, text)
+		seen[current.As16()] = true
+		if !respectSafety || !isReservedOrUnsafe(current) {
+			out = append(out, current.String())
 		} else {
 			metricSafetySkipped.Add(1)
 		}
@@ -1058,32 +1190,13 @@ func expandRange(s string, remaining int, respectSafety bool, seen map[string]bo
 	return out
 }
 
-func isReservedOrUnsafe(ipText string) bool {
-	ip := net.ParseIP(ipText)
-	if ip == nil {
-		return false
-	}
-	v4 := ip.To4()
-	if v4 == nil {
-		addr, err := netip.ParseAddr(ipText)
-		if err == nil {
-			for _, prefix := range safetyCIDRPrefixes {
-				if prefix.Contains(addr) {
-					return true
-				}
-			}
-		}
-		return ip.IsLoopback() || ip.IsPrivate() || ip.IsMulticast() || ip.IsUnspecified()
-	}
-	addr, err := netip.ParseAddr(ipText)
-	if err == nil {
-		for _, prefix := range safetyCIDRPrefixes {
-			if prefix.Contains(addr) {
-				return true
-			}
+func isReservedOrUnsafe(addr netip.Addr) bool {
+	for _, prefix := range safetyCIDRPrefixes {
+		if prefix.Contains(addr) {
+			return true
 		}
 	}
-	return false
+	return addr.IsLoopback() || addr.IsPrivate() || addr.IsMulticast() || addr.IsUnspecified()
 }
 
 func loadSafetyPrefixes() []netip.Prefix {
@@ -1234,10 +1347,12 @@ func scanWarnings(req scanRequest, targets []string) []string {
 	}
 	unsafe := 0
 	for _, target := range targets {
-		if isReservedOrUnsafe(target) {
-			unsafe++
-			if unsafe >= 5 {
-				break
+		if addr, err := netip.ParseAddr(target); err == nil {
+			if isReservedOrUnsafe(addr) {
+				unsafe++
+				if unsafe >= 5 {
+					break
+				}
 			}
 		}
 	}

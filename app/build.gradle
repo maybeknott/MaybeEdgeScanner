@@ -16,7 +16,7 @@ def hasAnyReleaseSigning = hasReleaseSigning || releaseSigningFromEnv
 def baseVersionCode = 20260519
 def ciRunNumber = System.getenv('GITHUB_RUN_NUMBER')
 def resolvedVersionCode = (System.getenv('ANDROID_VERSION_CODE') ?: (ciRunNumber ? "${baseVersionCode + ciRunNumber.toInteger()}" : "${baseVersionCode}")).toInteger()
-def resolvedVersionName = System.getenv('ANDROID_VERSION_NAME') ?: '1.0.0'
+def resolvedVersionName = System.getenv('ANDROID_VERSION_NAME') ?: '1.1.0'
 
 android {
     namespace 'com.maybeedgescanner'
@@ -94,6 +94,10 @@ android {
         targetCompatibility JavaVersion.VERSION_17
         coreLibraryDesugaringEnabled true
     }
+
+    buildFeatures {
+        aidl true
+    }
 }
 
 gradle.taskGraph.whenReady { taskGraph ->
@@ -106,5 +110,6 @@ dependencies {
     def shizukuVersion = '13.1.5'
     implementation "dev.rikka.shizuku:api:${shizukuVersion}"
     implementation "dev.rikka.shizuku:provider:${shizukuVersion}"
+    implementation 'androidx.recyclerview:recyclerview:1.3.2'
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
 }

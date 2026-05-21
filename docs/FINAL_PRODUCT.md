@@ -48,6 +48,13 @@ It is intentionally not connected to scan start/stop, automatic retry, backgroun
 
 Generated APKs, `.signing`, local `signing.properties`, build outputs, Gradle state, and sidecar binaries are ignored. Private signing files are not garbage; they are operator state and must stay outside git. Production signing secrets belong in GitHub Actions secrets or another encrypted secret manager.
 
+## Local Diagnostic Privacy Policy
+
+MaybeEdgeScanner integrates a local search engine for runtime logs and a standalone automated Network Diagnostic Suite. These diagnostic procedures run fully client-side inside isolated user-initiated processes:
+1. All log querying and string searches are executed in-memory. Log files are not persisted or cached on external media.
+2. Latency checks, DNS hostname lookups, raw TCP port connects, and HTTPS protocol handshakes are performed directly from the local device to public servers (`one.one.one.one`, `dns.google`, `1.1.1.1`, `8.8.8.8`, `www.google.com`, `aparat.com`).
+3. No telemetry reports, diagnostic logs, system details, or performance scores are transmitted to any remote servers or third-party analytic services.
+
 ## Verification
 
 The canonical verification path is GitHub Actions. The workflow downloads Go and Gradle dependencies, runs sidecar tests, builds sidecars, builds all Android release flavors, verifies signatures, uploads artifacts, and publishes the dependency-warmed container when needed.

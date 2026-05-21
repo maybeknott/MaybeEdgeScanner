@@ -51,10 +51,16 @@ import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.SSLParameters;
 
 import rikka.shizuku.Shizuku;
+import com.maybeedgescanner.diagnostics.PrivilegedTelephonyBasebandManager;
+
+import androidx.recyclerview.widget.RecyclerView;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import android.view.ViewGroup;
+import android.transition.TransitionManager;
 
 public class MainActivity extends Activity {
     public static final String ACTION_QUICK_SCAN = "com.maybeedgescanner.action.QUICK_SCAN";
-    private static final int BLUE = Color.rgb(55, 212, 255);
+    private static final int BLUE = Color.rgb(23, 192, 235);
     private static final int PANEL = Color.rgb(13, 28, 39);
     private static final int FIELD = Color.rgb(9, 20, 29);
     private static final int MUTED = Color.rgb(140, 161, 178);
@@ -75,6 +81,7 @@ public class MainActivity extends Activity {
     private final AtomicBoolean stop = new AtomicBoolean(false);
     private final AtomicBoolean renderQueued = new AtomicBoolean(false);
     private final AtomicBoolean shizukuCommandRunning = new AtomicBoolean(false);
+    private PrivilegedTelephonyBasebandManager basebandManager;
     private final AtomicInteger checkedTargets = new AtomicInteger(0);
     private final List<Result> allResults = new CopyOnWriteArrayList<>();
     private final ConcurrentHashMap<String, List<String>> assetLineCache = new ConcurrentHashMap<>();
@@ -94,12 +101,16 @@ public class MainActivity extends Activity {
     private long lastShizukuProbeAt;
     private float swipeDownX, swipeDownY;
 
-    private LinearLayout resultList;
+    private RecyclerView resultList;
+    private ResultsAdapter resultsAdapter;
+    private LinearLayout resultSummaryContainer;
+    private LinearLayout heatmapContainer;
+    private LinearLayout pagerContainer;
     private LinearLayout targetTab, liveTab, diagnosticsTab;
     private LinearLayout targetChipPreview, sniChipPreview;
     private LinearLayout analyticsPanel;
     private LinearLayout stableHistoryPanel;
-    private ScrollView mainScroll;
+    private ScrollView targetScroll, liveScroll, diagnosticsScroll;
     private View targetAnchor, liveAnchor, diagnosticsAnchor;
     private ProgressBar progress;
     private TextView status, metrics, bestView, countersView, logView, networkBanner, homeDashboardView;
@@ -109,7 +120,9 @@ public class MainActivity extends Activity {
     private EditText targetsInput, snisInput, totalInput, batchInput, threadsInput, timeoutInput;
     private EditText communitySampleInput, akamaiSampleInput, cloudfrontSampleInput, fastlySampleInput, cloudflareSampleInput, otherCdnSampleInput, customTargetSampleInput, customSniSampleInput;
     private EditText portsInput, pathInput, maxLatencyInput, resultLimitInput, cdnFilterInput, certFilterInput, sniFilterInput, minQualityInput;
-    private EditText shizukuKeyInput, shizukuValueInput;
+    private EditText shizukuKeyInput, shizukuValueInput, logFilterInput;
+    private TextView diagnosticOutputView;
+    private Button runDiagnosticsButton;
     private CheckBox multiSni, filterWorking, filterTlsHttp, bestPerIp, hideNoisyLogs, requireHttp, requireKnownCdn, requireTls13, batteryFriendlyUi;
     private CheckBox communitySourceEnabled, akamaiSourceEnabled, cloudfrontSourceEnabled, fastlySourceEnabled, cloudflareSourceEnabled, otherCdnSourceEnabled, defaultSniEnabled;
     private CheckBox stepTcp, stepTls, stepHttp, stepVerify;
@@ -141,8 +154,23 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        stop.set(true);
+        if (executor != null) {
+            executor.shutdownNow();
+        }
+        if (previewExecutor != null) {
+            previewExecutor.shutdownNow();
+        }
         removeShizukuListener();
         super.onDestroy();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (ACTION_QUICK_SCAN.equals(intent.getAction())) {
+            ui.postDelayed(this::startScan, 450);
+        }
     }
 
     @Override protected void onSaveInstanceState(Bundle outState) {
@@ -181,35 +209,49 @@ public class MainActivity extends Activity {
     }
 
     private void buildUi() {
-        LinearLayout screen = column();
+        RelativeLayout screen = new RelativeLayout(this);
         screen.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
                 new int[]{Color.rgb(5, 14, 23), Color.rgb(8, 28, 38), Color.rgb(15, 18, 34)}));
-        ScrollView scroll = new ScrollView(this);
-        mainScroll = scroll;
-        scroll.setOnTouchListener((v, event) -> handleTabSwipe(event));
-        LinearLayout root = column();
-        root.setPadding(dp(14), dp(14), dp(14), dp(22));
-        scroll.addView(root);
+        screen.setLayoutParams(new RelativeLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        root.addView(text("MaybeEdgeScanner", 27, Color.WHITE, true));
-        root.addView(text("Edge discovery workspace", 13, MUTED, false));
-        status = pill("Ready");
-        root.addView(status);
-        networkBanner = pill(networkContextLine());
-        root.addView(networkBanner);
-        homeDashboardView = panelText("Network and system\nTransport: checking\nLAN/WAN: checking\nDNS: checking\nPolicy: checking\nCapacity: checking\nDevice: checking\nRuntime: checking");
-        root.addView(homeDashboardView);
-        root.addView(quietNote("Sources build IP/SNI scan routes. Results show filtered cards, best SNIs, and export actions. Diagnostics keeps logs, radio controls, and network context separate."));
-        helpButton = button("Reference", Color.rgb(23, 46, 63), Color.WHITE);
-        root.addView(helpButton);
         LinearLayout tabs = row();
+        tabs.setId(View.generateViewId());
         tabTargetButton = button("Sources", Color.rgb(21, 45, 62), Color.WHITE);
         tabLiveButton = button("Results", Color.rgb(21, 45, 62), Color.WHITE);
         tabDiagnosticsButton = button("Diagnostics", Color.rgb(21, 45, 62), Color.WHITE);
         tabs.addView(tabTargetButton, weight());
         tabs.addView(tabLiveButton, weight());
         tabs.addView(tabDiagnosticsButton, weight());
-        screen.addView(tabs);
+        RelativeLayout.LayoutParams tabsParams = new RelativeLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tabsParams.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
+        tabs.setLayoutParams(tabsParams);
+
+        // Pinned App Header: System Status
+        LinearLayout headerContainer = column();
+        headerContainer.setId(View.generateViewId());
+        headerContainer.setPadding(dp(14), dp(12), dp(14), dp(8));
+        headerContainer.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{Color.rgb(10, 24, 40), Color.rgb(8, 20, 32)}));
+
+        LinearLayout titleRow = row();
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView titleText = text("MaybeEdgeScanner", 22, Color.WHITE, true);
+        if (Build.VERSION.SDK_INT >= 21) titleText.setLetterSpacing(0.04f);
+        titleRow.addView(titleText, weight());
+        status = pill("Ready");
+        status.setPadding(dp(10), dp(4), dp(10), dp(4));
+        titleRow.addView(status);
+        headerContainer.addView(titleRow);
+
+        TextView subtitleText = text("Edge discovery workspace", 12, MUTED, false);
+        subtitleText.setPadding(0, 0, 0, dp(4));
+        headerContainer.addView(subtitleText);
+
+        networkBanner = pill(networkContextLine());
+        networkBanner.setPadding(dp(10), dp(4), dp(10), dp(4));
+        headerContainer.addView(networkBanner);
 
         LinearLayout quick = row();
         startButton = button("Start", BLUE, Color.rgb(2, 18, 24));
@@ -219,10 +261,60 @@ public class MainActivity extends Activity {
         quick.addView(startButton, weight());
         quick.addView(stopButton, weight());
         quick.addView(clearButton, weight());
-        root.addView(quick);
+        headerContainer.addView(quick);
 
+        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(100);
+        LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(-1, dp(4));
+        progressLp.setMargins(0, dp(6), 0, 0);
+        progress.setLayoutParams(progressLp);
+        headerContainer.addView(progress);
+
+        RelativeLayout.LayoutParams headerParams = new RelativeLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        headerParams.addRule(RelativeLayout.ALIGN_PARENT_TOP);
+        headerContainer.setLayoutParams(headerParams);
+
+        // Central FrameLayout content view container
+        FrameLayout contentContainer = new FrameLayout(this);
+        contentContainer.setId(View.generateViewId());
+        RelativeLayout.LayoutParams contentParams = new RelativeLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        contentParams.addRule(RelativeLayout.BELOW, headerContainer.getId());
+        contentParams.addRule(RelativeLayout.ABOVE, tabs.getId());
+        contentContainer.setLayoutParams(contentParams);
+
+        // Tab 1: Sources scroll container
+        targetScroll = new ScrollView(this);
+        targetScroll.setOnTouchListener((v, event) -> handleTabSwipe(event));
         targetTab = column();
-        root.addView(targetTab);
+        targetTab.setPadding(dp(14), dp(10), dp(14), dp(22));
+        targetScroll.addView(targetTab);
+        contentContainer.addView(targetScroll);
+
+        // Tab 2: Results scroll container
+        liveScroll = new ScrollView(this);
+        liveScroll.setOnTouchListener((v, event) -> handleTabSwipe(event));
+        liveTab = column();
+        liveTab.setPadding(dp(14), dp(10), dp(14), dp(22));
+        liveScroll.addView(liveTab);
+        contentContainer.addView(liveScroll);
+
+        // Tab 3: Diagnostics scroll container
+        diagnosticsScroll = new ScrollView(this);
+        diagnosticsScroll.setOnTouchListener((v, event) -> handleTabSwipe(event));
+        diagnosticsTab = column();
+        diagnosticsTab.setPadding(dp(14), dp(10), dp(14), dp(22));
+        diagnosticsScroll.addView(diagnosticsTab);
+        contentContainer.addView(diagnosticsScroll);
+
+        // Populate Sources Tab
+        homeDashboardView = panelText("Network and system\nTransport: checking\nLAN/WAN: checking\nDNS: checking\nPolicy: checking\nCapacity: checking\nDevice: checking\nRuntime: checking");
+        targetTab.addView(homeDashboardView);
+        targetTab.addView(quietNote("Sources build IP/SNI scan routes. Results show filtered cards, best SNIs, and export actions. Diagnostics keeps logs, radio controls, and network context separate."));
+        helpButton = button("Reference", Color.rgb(23, 46, 63), Color.WHITE);
+        targetTab.addView(helpButton);
+
         targetAnchor = section("Sources");
         targetTab.addView(targetAnchor);
         targetsInput = area("Custom targets: IPv4, IPv6, domains, CIDR, ranges");
@@ -259,7 +351,7 @@ public class MainActivity extends Activity {
         sourceSummaryView = text("Managed sources: initializing", 12, Color.rgb(196, 223, 235), false);
         sourceHealthView = text("Source health: checking", 11, Color.rgb(160, 195, 215), false);
         scanPlanView = text("Scan plan: mapping", 11, Color.WHITE, false);
-        scanPlanView.setTypeface(Typeface.MONOSPACE);
+        formatMonospace(scanPlanView, 11);
 
         metricsDashboardCard.addView(text("Pre-Flight Invalidation Metrics", 13, BLUE, true));
         metricsDashboardCard.addView(sourceSummaryView);
@@ -379,13 +471,9 @@ public class MainActivity extends Activity {
         requestPanel.addView(checks2);
         targetTab.addView(collapsibleBox("Request and display behavior", requestPanel, false));
 
-        liveTab = column();
-        root.addView(liveTab);
+        // Populate Results Tab
         liveAnchor = section("Results");
         liveTab.addView(liveAnchor);
-        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progress.setMax(100);
-        liveTab.addView(progress);
         metrics = text("0 / 0 | TCP 0 | TLS 0 | HTTP 0 | Q 0", 13, Color.WHITE, false);
         countersView = text("Down 0 | timeout 0 | reset 0 | cert 0 | DNS 0 | " + resourceLine(), 12, MUTED, false);
         bestView = panelText("Best result will appear here");
@@ -494,25 +582,67 @@ public class MainActivity extends Activity {
         stableHistoryPanel.setPadding(dp(12), dp(10), dp(12), dp(10));
         setOuterMargin(stableHistoryPanel, 0, dp(8), 0, dp(8));
         liveTab.addView(stableHistoryPanel);
-        resultList = new LinearLayout(this);
-        resultList.setOrientation(LinearLayout.VERTICAL);
-        resultList.setLayoutTransition(null);
+        resultSummaryContainer = new LinearLayout(this);
+        resultSummaryContainer.setOrientation(LinearLayout.VERTICAL);
+        liveTab.addView(resultSummaryContainer);
+
+        heatmapContainer = new LinearLayout(this);
+        heatmapContainer.setOrientation(LinearLayout.VERTICAL);
+        liveTab.addView(heatmapContainer);
+
+        resultList = new RecyclerView(this);
+        resultList.setLayoutManager(new LinearLayoutManager(this));
+        resultList.setNestedScrollingEnabled(false);
         liveTab.addView(resultList);
 
-        diagnosticsTab = column();
-        root.addView(diagnosticsTab);
+        resultsAdapter = new ResultsAdapter();
+        resultList.setAdapter(resultsAdapter);
+
+        pagerContainer = new LinearLayout(this);
+        pagerContainer.setOrientation(LinearLayout.VERTICAL);
+        liveTab.addView(pagerContainer);
+
+        // Populate Diagnostics Tab
         diagnosticsAnchor = section("Diagnostics");
         diagnosticsTab.addView(diagnosticsAnchor);
         diagnosticsTab.addView(quietNote("Logs and support links live here so they do not bury scan setup or result cards."));
         diagnosticsTab.addView(shizukuHealthTile());
+
+        // Automated Diagnostic Checks Card
+        diagnosticsTab.addView(section("Network Diagnostic Checks"));
+        LinearLayout diagCard = column();
+        diagCard.setBackground(glassBg(PANEL, Color.argb(120, 255, 255, 255)));
+        diagCard.setPadding(dp(12), dp(12), dp(12), dp(12));
+        setOuterMargin(diagCard, 0, dp(6), 0, dp(8));
+
+        diagCard.addView(text("Automated Diagnostic Suite", 13, BLUE, true));
+        diagCard.addView(text("Check DNS query latency, raw TCP connection, and secure HTTPS handshakes in a non-blocking background thread.", 11, MUTED, false));
+
+        runDiagnosticsButton = button("Run Diagnostics", Color.rgb(24, 45, 58), Color.WHITE);
+        runDiagnosticsButton.setOnClickListener(v -> runNetworkDiagnostics());
+        diagCard.addView(runDiagnosticsButton);
+
+        diagnosticOutputView = panelText("Ready to run network diagnostics.");
+        formatMonospace(diagnosticOutputView, 11);
+        diagnosticOutputView.setTextIsSelectable(true);
+        diagCard.addView(diagnosticOutputView);
+        diagnosticsTab.addView(diagCard);
+
         diagnosticsTab.addView(section("Logs"));
+        logFilterInput = input("", false);
+        logFilterInput.setHint("Search logs...");
+        diagnosticsTab.addView(box("Search logs", logFilterInput));
+
         logView = text("", 12, MUTED, false);
-        logView.setTypeface(Typeface.MONOSPACE);
-        if (Build.VERSION.SDK_INT >= 21) logView.setLetterSpacing(0.06f);
-        if (Build.VERSION.SDK_INT >= 28) logView.setLineHeight(dp(18));
+        formatMonospace(logView, 12);
         diagnosticsTab.addView(logView);
         diagnosticsTab.addView(collapsibleBox("Radio and network assist", diagnosticsRadioPanel(), false));
         diagnosticsTab.addView(collapsibleBox("Support and project links", diagnosticsSupportPanel(), false));
+
+        // Setup layouts inside screen Relativelayout
+        screen.addView(headerContainer);
+        screen.addView(contentContainer);
+        screen.addView(tabs);
 
         startButton.setOnClickListener(v -> startScan());
         stopButton.setOnClickListener(v -> requestStop());
@@ -573,7 +703,7 @@ public class MainActivity extends Activity {
         certFilterInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
         sniFilterInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
         minQualityInput.addTextChangedListener(simpleWatcher(this::renderResultsFromFirstPage));
-        screen.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        logFilterInput.addTextChangedListener(simpleWatcher(this::refreshLogView));
         setContentView(screen);
         applyAccessibilityLabels();
         updateHomeDashboard();
@@ -860,7 +990,9 @@ public class MainActivity extends Activity {
 
     private android.text.TextWatcher simpleWatcher(Runnable afterChange) {
         final Runnable runner = () -> {
-            if (!suppressUiRefresh && afterChange != null) afterChange.run();
+            if (!suppressUiRefresh && afterChange != null) {
+                android.os.AsyncTask.THREAD_POOL_EXECUTOR.execute(afterChange);
+            }
         };
         return new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
@@ -1098,8 +1230,27 @@ public class MainActivity extends Activity {
     }
 
     private void scrollTo(View anchor) {
-        if (mainScroll == null || anchor == null) return;
-        mainScroll.post(() -> mainScroll.smoothScrollTo(0, anchor.getTop()));
+        if (anchor == null) return;
+        View parent = (View) anchor.getParent();
+        int top = anchor.getTop();
+        ScrollView scrollView = null;
+        while (parent != null) {
+            if (parent instanceof ScrollView) {
+                scrollView = (ScrollView) parent;
+                break;
+            }
+            top += parent.getTop();
+            if (parent.getParent() instanceof View) {
+                parent = (View) parent.getParent();
+            } else {
+                break;
+            }
+        }
+        if (scrollView != null) {
+            final ScrollView finalScroll = scrollView;
+            final int finalTop = top;
+            finalScroll.post(() -> finalScroll.smoothScrollTo(0, finalTop));
+        }
     }
 
     private void selectTab(int tab) {
@@ -1107,10 +1258,13 @@ public class MainActivity extends Activity {
         styleTab(tabTargetButton, activeTab == 0);
         styleTab(tabLiveButton, activeTab == 1);
         styleTab(tabDiagnosticsButton, activeTab == 2);
-        setTabVisible(targetTab, activeTab == 0);
-        setTabVisible(liveTab, activeTab == 1);
-        setTabVisible(diagnosticsTab, activeTab == 2);
-        if (mainScroll != null) mainScroll.post(() -> mainScroll.smoothScrollTo(0, 0));
+        setTabVisible(targetScroll, activeTab == 0);
+        setTabVisible(liveScroll, activeTab == 1);
+        setTabVisible(diagnosticsScroll, activeTab == 2);
+        ScrollView activeScroll = (activeTab == 0) ? targetScroll : (activeTab == 1 ? liveScroll : diagnosticsScroll);
+        if (activeScroll != null) {
+            activeScroll.post(() -> activeScroll.smoothScrollTo(0, 0));
+        }
     }
 
     private void setTabVisible(View tab, boolean visible) {
@@ -1540,7 +1694,10 @@ public class MainActivity extends Activity {
         }
         checkedTargets.set(0);
         scanStartedAt = System.currentTimeMillis();
-        resultList.removeAllViews();
+        resultSummaryContainer.removeAllViews();
+        heatmapContainer.removeAllViews();
+        pagerContainer.removeAllViews();
+        resultsAdapter.setResults(Collections.emptyList());
         synchronized (logLines) {
             logLines.clear();
             stableLogBuilder.setLength(0);
@@ -1653,13 +1810,21 @@ public class MainActivity extends Activity {
             appendLog(profileName(profile) + " batch " + batchNo + "/" + batches + ": " + batch.size() + " targets");
             CountDownLatch latch = new CountDownLatch(batch.size());
             for (String target : batch) {
-                executor.submit(() -> {
-                    try { scanTarget(target, snis, ports, timeout, profile, allSni, httpPath, tlsMode, suppressNoisyLogs); }
-                    finally {
-                        updateProgress();
-                        latch.countDown();
-                    }
-                });
+                if (stop.get()) {
+                    latch.countDown();
+                    continue;
+                }
+                try {
+                    executor.submit(() -> {
+                        try { scanTarget(target, snis, ports, timeout, profile, allSni, httpPath, tlsMode, suppressNoisyLogs); }
+                        finally {
+                            updateProgress();
+                            latch.countDown();
+                        }
+                    });
+                } catch (RejectedExecutionException ignored) {
+                    latch.countDown();
+                }
             }
             try { latch.await(); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
         }
@@ -1756,16 +1921,22 @@ public class MainActivity extends Activity {
             updateAnalytics(snapshot);
         }
         renderStableHistoryPanel();
-        resultList.removeAllViews();
+
+        resultSummaryContainer.removeAllViews();
+        heatmapContainer.removeAllViews();
+        pagerContainer.removeAllViews();
+
         if (snapshot.isEmpty()) {
-            resultList.addView(emptyResultsView());
+            bestView.setText("Best result unavailable\n");
+            resultsAdapter.setResults(Collections.emptyList());
             return;
         }
         Result bestVisible = bestVisibleResult(snapshot);
         bestView.setText((bestVisible == null ? "Best result unavailable" : "Best: " + bestVisible.summary()) + "\n" + bestSniLine(snapshot));
-        resultList.addView(resultSummaryStrip(snapshot));
+        
+        resultSummaryContainer.addView(resultSummaryStrip(snapshot));
         if (!batteryFriendlyMode() && !compactMode() && visualizationMode == 1) {
-            resultList.addView(heatmapView(snapshot));
+            heatmapContainer.addView(heatmapView(snapshot));
         }
         int limit = Math.min(clampInt(intValue(resultLimitInput, 250), 1, MAX_RENDERED_CARDS), snapshot.size());
         if (batteryFriendlyMode()) limit = Math.min(limit, 75);
@@ -1773,9 +1944,15 @@ public class MainActivity extends Activity {
         int maxStart = Math.max(0, snapshot.size() - limit);
         resultOffset = Math.min(Math.max(0, resultOffset), maxStart);
         int end = Math.min(snapshot.size(), resultOffset + limit);
-        for (int i = resultOffset; i < end; i++) resultList.addView(resultView(snapshot.get(i)));
+        
+        List<Result> sliced = new ArrayList<>();
+        for (int i = resultOffset; i < end; i++) {
+            sliced.add(snapshot.get(i));
+        }
+        resultsAdapter.setResults(sliced);
+
         if (limit < snapshot.size()) {
-            resultList.addView(resultPager(resultOffset, end, snapshot.size(), limit));
+            pagerContainer.addView(resultPager(resultOffset, end, snapshot.size(), limit));
         }
     }
 
@@ -1835,7 +2012,7 @@ public class MainActivity extends Activity {
                 " | " + bestSniLine(rows) +
                 " | filters " + filterSummary();
         TextView v = panelText(line);
-        v.setTypeface(Typeface.MONOSPACE);
+        formatMonospace(v, 11);
         return v;
     }
 
@@ -2082,26 +2259,38 @@ public class MainActivity extends Activity {
     }
 
     private List<Result> filteredResults() {
-        List<Result> snapshot;
-        synchronized (allResults) { snapshot = new ArrayList<>(allResults); }
+        boolean fWorking = filterWorking.isChecked();
+        boolean fTlsHttp = filterTlsHttp.isChecked();
+        boolean rHttp = requireHttp.isChecked();
+        boolean rKnownCdn = requireKnownCdn.isChecked();
+        boolean rTls13 = requireTls13.isChecked();
+        boolean bPerIp = bestPerIp.isChecked();
         int maxLatency = intValue(maxLatencyInput, 0);
+        int minQuality = intValue(minQualityInput, 0);
         String cdnPreset = cdnProviderSpinner == null || cdnProviderSpinner.getSelectedItem() == null ? "Any provider" : cdnProviderSpinner.getSelectedItem().toString();
         String cdn = cdnFilterInput == null ? "" : cdnFilterInput.getText().toString().trim().toLowerCase(Locale.US);
         String cert = certFilterInput == null ? "" : certFilterInput.getText().toString().trim().toLowerCase(Locale.US);
         String sni = sniFilterInput == null ? "" : sniFilterInput.getText().toString().trim().toLowerCase(Locale.US);
-        int minQuality = intValue(minQualityInput, 0);
-        snapshot.removeIf(r -> (filterWorking.isChecked() && !r.working()) ||
-                (filterTlsHttp.isChecked() && !(r.tlsPass || r.httpPass)) ||
-                (requireHttp.isChecked() && !r.httpPass) ||
-                (requireKnownCdn.isChecked() && "UNKNOWN".equalsIgnoreCase(r.cdn)) ||
-                (!providerMatches(cdnPreset, r.cdn)) ||
-                (requireTls13.isChecked() && !r.tlsVersion.contains("1.3")) ||
-                (maxLatency > 0 && (r.totalLatency() <= 0 || r.totalLatency() > maxLatency)) ||
-                (minQuality > 0 && r.quality < minQuality) ||
-                (!cdn.isEmpty() && !r.cdn.toLowerCase(Locale.US).contains(cdn)) ||
-                (!sni.isEmpty() && !r.sni.toLowerCase(Locale.US).contains(sni)) ||
-                (!cert.isEmpty() && !r.tlsCert.toLowerCase(Locale.US).contains(cert)));
-        if (bestPerIp.isChecked()) {
+        int sort = sortSpinner.getSelectedItemPosition();
+
+        List<Result> snapshot = new ArrayList<>();
+        synchronized (allResults) {
+            for (Result r : allResults) {
+                if (fWorking && !r.working()) continue;
+                if (fTlsHttp && !(r.tlsPass || r.httpPass)) continue;
+                if (rHttp && !r.httpPass) continue;
+                if (rKnownCdn && "UNKNOWN".equalsIgnoreCase(r.cdn)) continue;
+                if (!providerMatches(cdnPreset, r.cdn)) continue;
+                if (rTls13 && !r.tlsVersion.contains("1.3")) continue;
+                if (maxLatency > 0 && (r.totalLatency() <= 0 || r.totalLatency() > maxLatency)) continue;
+                if (minQuality > 0 && r.quality < minQuality) continue;
+                if (!cdn.isEmpty() && !r.cdn.toLowerCase(Locale.US).contains(cdn)) continue;
+                if (!sni.isEmpty() && !r.sni.toLowerCase(Locale.US).contains(sni)) continue;
+                if (!cert.isEmpty() && !r.tlsCert.toLowerCase(Locale.US).contains(cert)) continue;
+                snapshot.add(r);
+            }
+        }
+        if (bPerIp) {
             Map<String, Result> best = new LinkedHashMap<>();
             for (Result r : snapshot) {
                 String key = r.ip + ":" + r.port;
@@ -2110,7 +2299,6 @@ public class MainActivity extends Activity {
             }
             snapshot = new ArrayList<>(best.values());
         }
-        int sort = sortSpinner.getSelectedItemPosition();
         if (sort == 1) snapshot.sort(Comparator.comparingLong(r -> r.totalLatency() > 0 ? r.totalLatency() : Long.MAX_VALUE));
         else if (sort == 2) snapshot.sort((a, b) -> Double.compare(b.quality, a.quality));
         else if (sort == 3) snapshot.sort(Comparator.comparing((Result r) -> r.cdn).thenComparing((a, b) -> Double.compare(b.quality, a.quality)));
@@ -2165,7 +2353,7 @@ public class MainActivity extends Activity {
         lp.setMargins(0, dp(compactMode() ? 4 : 7), 0, 0);
         card.setLayoutParams(lp);
         TextView top = text(r.address(), compactMode() ? 13 : 15, Color.WHITE, true);
-        top.setTypeface(Typeface.MONOSPACE);
+        formatMonospace(top, compactMode() ? 13 : 15);
         TextView route = text("SNI " + dash(r.sni), compactMode() ? 11 : 12, highContrastMode() ? Color.WHITE : Color.rgb(190, 218, 232), false);
         route.setSingleLine(false);
         LinearLayout signal = row();
@@ -2176,7 +2364,7 @@ public class MainActivity extends Activity {
         signal.addView(statusDot(r.cdn, !"UNKNOWN".equalsIgnoreCase(r.cdn), BLUE), smallChipLp());
         TextView body = text(latencySparkline(r) + "  " + r.totalLatency() + "ms | HTTP " + r.httpStatus +
                 " | Q " + Math.round(r.quality), 12, Color.WHITE, false);
-        body.setTypeface(Typeface.MONOSPACE);
+        formatMonospace(body, 12);
         card.addView(top);
         card.addView(route);
         card.addView(signal);
@@ -2310,7 +2498,10 @@ public class MainActivity extends Activity {
         totalTargets = 0;
         stableHistoryRenderedAt = 0;
         progress.setProgress(0);
-        resultList.removeAllViews();
+        resultSummaryContainer.removeAllViews();
+        heatmapContainer.removeAllViews();
+        pagerContainer.removeAllViews();
+        resultsAdapter.setResults(Collections.emptyList());
         synchronized (logLines) {
             logLines.clear();
             stableLogBuilder.setLength(0);
@@ -2430,70 +2621,68 @@ public class MainActivity extends Activity {
         }
         void tls(int timeout, int tlsMode) {
             long t = System.currentTimeMillis();
-            try {
-                int activeMode = resolveTlsMode(tlsMode);
-                tlsProfile = tlsProfileName(activeMode);
-                String host = probeHost();
-                Socket raw = new Socket();
+            int activeMode = resolveTlsMode(tlsMode);
+            tlsProfile = tlsProfileName(activeMode);
+            String host = probeHost();
+            try (Socket raw = new Socket()) {
                 long connectStart = System.currentTimeMillis();
                 raw.connect(new InetSocketAddress(ip, port), timeout);
                 tcpPass = true;
                 tcpLatencyMs = System.currentTimeMillis() - connectStart;
                 raw.setSoTimeout(timeout);
-                SSLSocket ssl = (SSLSocket) ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(raw, host, port, true);
-                ssl.setSoTimeout(timeout);
-                configureTlsSocket(ssl, activeMode, false);
-                ssl.startHandshake();
-                tlsPass = true; tlsLatencyMs = System.currentTimeMillis() - t;
-                tlsVersion = ssl.getSession().getProtocol();
-                tlsCipher = ssl.getSession().getCipherSuite();
-                alpn = selectedAlpn(ssl);
-                Certificate[] certs = ssl.getSession().getPeerCertificates();
-                if (certs.length > 0 && certs[0] instanceof X509Certificate) {
-                    X509Certificate c = (X509Certificate) certs[0];
-                    tlsCert = c.getSubjectX500Principal().getName();
-                    certFingerprint = sha256(c.getEncoded());
+                try (SSLSocket ssl = (SSLSocket) ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(raw, host, port, true)) {
+                    ssl.setSoTimeout(timeout);
+                    configureTlsSocket(ssl, activeMode, false);
+                    ssl.startHandshake();
+                    tlsPass = true; tlsLatencyMs = System.currentTimeMillis() - t;
+                    tlsVersion = ssl.getSession().getProtocol();
+                    tlsCipher = ssl.getSession().getCipherSuite();
+                    alpn = selectedAlpn(ssl);
+                    Certificate[] certs = ssl.getSession().getPeerCertificates();
+                    if (certs.length > 0 && certs[0] instanceof X509Certificate) {
+                        X509Certificate c = (X509Certificate) certs[0];
+                        tlsCert = c.getSubjectX500Principal().getName();
+                        certFingerprint = sha256(c.getEncoded());
+                    }
                 }
-                ssl.close();
             } catch (Exception e) { reason = classify(e); }
         }
         void http(int timeout, String path, int tlsMode) {
             long t = System.currentTimeMillis();
-            try {
-                int activeMode = resolveTlsMode(tlsMode);
-                if (tlsProfile.isEmpty()) tlsProfile = tlsProfileName(activeMode);
-                String host = probeHost();
-                Socket raw = new Socket();
+            int activeMode = resolveTlsMode(tlsMode);
+            if (tlsProfile.isEmpty()) tlsProfile = tlsProfileName(activeMode);
+            String host = probeHost();
+            try (Socket raw = new Socket()) {
                 long connectStart = System.currentTimeMillis();
                 raw.connect(new InetSocketAddress(ip, port), timeout);
                 tcpPass = true;
                 if (tcpLatencyMs <= 0) tcpLatencyMs = System.currentTimeMillis() - connectStart;
                 raw.setSoTimeout(timeout);
-                SSLSocket ssl = (SSLSocket) ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(raw, host, port, true);
-                ssl.setSoTimeout(timeout);
-                configureTlsSocket(ssl, activeMode, true);
-                ssl.startHandshake();
-                tlsPass = true;
-                alpn = selectedAlpn(ssl);
-                String safePath = path == null || path.trim().isEmpty() ? "/" : path.trim();
-                if (!safePath.startsWith("/")) safePath = "/" + safePath;
-                OutputStream out = ssl.getOutputStream();
-                out.write(("HEAD " + safePath + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\nUser-Agent: MaybeEdgeScanner/1.1\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
-                out.flush();
-                InputStream in = ssl.getInputStream();
-                String line = readAsciiLineLimited(in, 4096);
-                httpStatus = parseStatus(line);
-                String header;
-                for (int i = 0; i < 48 && (header = readAsciiLineLimited(in, 4096)) != null && !header.isEmpty(); i++) {
-                    String lower = header.toLowerCase(Locale.US);
-                    if (lower.startsWith("alt-svc:")) {
-                        altSvc = header.substring(header.indexOf(':') + 1).trim();
-                        http3Hint = altSvc.toLowerCase(Locale.US).contains("h3");
+                try (SSLSocket ssl = (SSLSocket) ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(raw, host, port, true)) {
+                    ssl.setSoTimeout(timeout);
+                    configureTlsSocket(ssl, activeMode, true);
+                    ssl.startHandshake();
+                    tlsPass = true;
+                    alpn = selectedAlpn(ssl);
+                    String safePath = path == null || path.trim().isEmpty() ? "/" : path.trim();
+                    if (!safePath.startsWith("/")) safePath = "/" + safePath;
+                    OutputStream out = ssl.getOutputStream();
+                    out.write(("HEAD " + safePath + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\nUser-Agent: MaybeEdgeScanner/1.1\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                    out.flush();
+                    InputStream in = ssl.getInputStream();
+                    String line = readAsciiLineLimited(in, 4096);
+                    httpStatus = parseStatus(line);
+                    String header;
+                    for (int i = 0; i < 48 && (header = readAsciiLineLimited(in, 4096)) != null && !header.isEmpty(); i++) {
+                        String lower = header.toLowerCase(Locale.US);
+                        if (lower.startsWith("alt-svc:")) {
+                            altSvc = header.substring(header.indexOf(':') + 1).trim();
+                            http3Hint = altSvc.toLowerCase(Locale.US).contains("h3");
+                        }
                     }
+                    httpPass = httpStatus > 0 && httpStatus < 500;
+                    httpLatencyMs = System.currentTimeMillis() - t;
                 }
-                httpPass = httpStatus > 0 && httpStatus < 500;
-                httpLatencyMs = System.currentTimeMillis() - t;
-                ssl.close();
             } catch (Exception e) { reason = classify(e); }
         }
         Result finish() {
@@ -2846,8 +3035,155 @@ public class MainActivity extends Activity {
                     stableLogBuilder.append(line).append('\n');
                 }
             }
-            if (logView != null) logView.setText(stableLogBuilder.toString().trim());
+            refreshLogView();
         });
+    }
+    private void refreshLogView() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            refreshLogViewDirect();
+        } else {
+            ui.post(this::refreshLogViewDirect);
+        }
+    }
+    private void refreshLogViewDirect() {
+        if (logView == null) return;
+        String filter = "";
+        if (logFilterInput != null) {
+            filter = logFilterInput.getText().toString().trim().toLowerCase(Locale.US);
+        }
+        if (filter.isEmpty()) {
+            logView.setText(stableLogBuilder.toString().trim());
+        } else {
+            StringBuilder sb = new StringBuilder();
+            synchronized (logLines) {
+                for (String x : logLines) {
+                    if (x.toLowerCase(Locale.US).contains(filter)) {
+                        sb.append(x).append('\n');
+                    }
+                }
+            }
+            logView.setText(sb.toString().trim());
+        }
+    }
+    private void runNetworkDiagnostics() {
+        if (diagnosticOutputView == null || runDiagnosticsButton == null) return;
+        runDiagnosticsButton.setEnabled(false);
+        diagnosticOutputView.setText("Running diagnostic suite...\n");
+        appendLog("Network diagnostics: starting...");
+
+        new Thread(() -> {
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== NETWORK DIAGNOSTIC REPORT ===\n");
+            sb.append("Timestamp: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date())).append("\n\n");
+
+            // 1. VPN / Proxy Check
+            sb.append("[1] Checking proxy & VPN posture:\n");
+            try {
+                ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                if (cm != null) {
+                    Network network = cm.getActiveNetwork();
+                    if (network != null) {
+                        NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+                        if (caps != null) {
+                            boolean isVpn = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
+                            sb.append(" - VPN active: ").append(isVpn ? "YES (Traffic routed via VPN tunnel)" : "NO").append("\n");
+                        }
+                    }
+                    ProxyInfo proxy = cm.getDefaultProxy();
+                    if (proxy != null && proxy.getHost() != null) {
+                        sb.append(" - System proxy: ").append(proxy.getHost()).append(":").append(proxy.getPort()).append("\n");
+                    } else {
+                        sb.append(" - System proxy: none detected\n");
+                    }
+                }
+            } catch (Exception e) {
+                sb.append(" - Error querying connection managers: ").append(e.getMessage()).append("\n");
+            }
+            sb.append("\n");
+
+            // 2. DNS latency test
+            sb.append("[2] Testing DNS resolution latency:\n");
+            String[] dnsHosts = {"one.one.one.one", "dns.google", "aparat.com"};
+            for (String host : dnsHosts) {
+                long start = System.currentTimeMillis();
+                try {
+                    InetAddress[] addrs = InetAddress.getAllByName(host);
+                    long elapsed = System.currentTimeMillis() - start;
+                    sb.append(" - Resolved ").append(host).append(" in ").append(elapsed).append("ms -> [");
+                    for (int i = 0; i < addrs.length; i++) {
+                        sb.append(addrs[i].getHostAddress());
+                        if (i < addrs.length - 1) sb.append(", ");
+                    }
+                    sb.append("]\n");
+                } catch (Exception e) {
+                    sb.append(" - Resolution failed for ").append(host).append(": ").append(e.toString()).append("\n");
+                }
+            }
+            sb.append("\n");
+
+            // 3. Raw TCP Latency
+            sb.append("[3] Testing raw TCP connection latency (Port 443):\n");
+            String[][] tcpHosts = {
+                {"Cloudflare", "1.1.1.1"},
+                {"Google DNS", "8.8.8.8"},
+                {"Akamai DNS", "184.26.160.25"}
+            };
+            for (String[] pair : tcpHosts) {
+                String name = pair[0];
+                String ip = pair[1];
+                long start = System.currentTimeMillis();
+                try (Socket s = new Socket()) {
+                    s.connect(new InetSocketAddress(ip, 443), 2000);
+                    long elapsed = System.currentTimeMillis() - start;
+                    sb.append(" - Connected to ").append(name).append(" (").append(ip).append(") in ").append(elapsed).append("ms\n");
+                } catch (Exception e) {
+                    sb.append(" - Connection failed to ").append(name).append(" (").append(ip).append("): ").append(e.getMessage()).append("\n");
+                }
+            }
+            sb.append("\n");
+
+            // 4. HTTPS Protocol & Secure Negotiation Handshake
+            sb.append("[4] Testing secure HTTPS negotiation handshake:\n");
+            String[] httpsTargets = {"https://1.1.1.1", "https://8.8.8.8", "https://www.google.com"};
+            for (String target : httpsTargets) {
+                long start = System.currentTimeMillis();
+                HttpURLConnection conn = null;
+                try {
+                    conn = (HttpURLConnection) new URL(target).openConnection();
+                    conn.setConnectTimeout(2500);
+                    conn.setReadTimeout(2500);
+                    conn.setRequestMethod("GET");
+                    int code = conn.getResponseCode();
+                    long elapsed = System.currentTimeMillis() - start;
+                    sb.append(" - GET ").append(target).append(" status ").append(code).append(" in ").append(elapsed).append("ms\n");
+                } catch (Exception e) {
+                    sb.append(" - HTTPS negotiation failed for ").append(target).append(": ").append(e.toString()).append("\n");
+                } finally {
+                    if (conn != null) conn.disconnect();
+                }
+            }
+            sb.append("\n");
+
+            // 5. System stats
+            sb.append("[5] Local routing environments:\n");
+            sb.append(" - Device: ").append(Build.MANUFACTURER).append(" ").append(Build.MODEL).append("\n");
+            sb.append(" - Android version: ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
+            Runtime rt = Runtime.getRuntime();
+            long freeHeap = rt.freeMemory() / (1024 * 1024);
+            long totalHeap = rt.totalMemory() / (1024 * 1024);
+            sb.append(" - JVM Heap memory: total ").append(totalHeap).append("MB, free ").append(freeHeap).append("MB\n");
+
+            String report = sb.toString();
+            appendLog("Network diagnostics: completed.");
+            ui.post(() -> {
+                if (diagnosticOutputView != null) {
+                    diagnosticOutputView.setText(report);
+                }
+                if (runDiagnosticsButton != null) {
+                    runDiagnosticsButton.setEnabled(true);
+                }
+            });
+        }, "network-diagnostic-thread").start();
     }
     private void rebuildStableLogBuilder() { stableLogBuilder.setLength(0); for (String x : logLines) stableLogBuilder.append(x).append('\n'); }
     private int intValue(EditText e, int defaultValue) { try { String s = e.getText().toString().trim(); return s.isEmpty() ? defaultValue : Integer.parseInt(s); } catch (Exception ex) { return defaultValue; } }
@@ -2895,17 +3231,54 @@ public class MainActivity extends Activity {
     }
 
     private LinearLayout collapsibleBox(String title, View body, boolean open) {
-        LinearLayout group = column();
+        final LinearLayout group = column();
         setOuterMargin(group, 0, dp(8), 0, dp(8));
-        Button header = button((open ? "- " : "+ ") + title, Color.rgb(16, 38, 52), Color.WHITE);
+
+        final LinearLayout header = row();
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setBackground(glassBg(Color.rgb(16, 38, 52), Color.argb(125, 255, 255, 255)));
+        header.setPadding(dp(12), dp(10), dp(12), dp(10));
+        header.setClickable(true);
+        header.setFocusable(true);
+
+        final TextView titleText = text(title, 12, Color.WHITE, true);
+        titleText.setTypeface(Typeface.DEFAULT_BOLD);
+        
+        final TextView arrowText = text("▼", 12, MUTED, false);
+        arrowText.setGravity(Gravity.CENTER);
+        if (open) {
+            arrowText.setRotation(180f);
+        } else {
+            arrowText.setRotation(0f);
+        }
+
+        header.addView(titleText, weight());
+        header.addView(arrowText);
+
         body.setVisibility(open ? View.VISIBLE : View.GONE);
         header.setContentDescription(title + (open ? " expanded" : " collapsed"));
+
+        header.setOnTouchListener((v, e) -> {
+            if (e.getAction() == android.view.MotionEvent.ACTION_DOWN) {
+                v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP);
+                v.animate().scaleX(0.98f).scaleY(0.98f).setDuration(70).start();
+            } else if (e.getAction() == android.view.MotionEvent.ACTION_UP || e.getAction() == android.view.MotionEvent.ACTION_CANCEL) {
+                v.animate().scaleX(1f).scaleY(1f).setDuration(130).setInterpolator(new DecelerateInterpolator()).start();
+            }
+            return false;
+        });
+
         header.setOnClickListener(v -> {
             boolean show = body.getVisibility() != View.VISIBLE;
+            if (group.getParent() instanceof ViewGroup) {
+                TransitionManager.beginDelayedTransition((ViewGroup) group.getParent());
+            }
             body.setVisibility(show ? View.VISIBLE : View.GONE);
-            header.setText((show ? "- " : "+ ") + title);
             header.setContentDescription(title + (show ? " expanded" : " collapsed"));
+            arrowText.animate().cancel();
+            arrowText.animate().rotation(show ? 180f : 0f).setDuration(200).start();
         });
+
         group.addView(header);
         group.addView(body);
         return group;
@@ -2997,7 +3370,7 @@ public class MainActivity extends Activity {
         card.addView(collapsibleBox("Advanced radio key", custom, false));
 
         shizukuOutputView = panelText("No privileged action has run in this session. Use Bridge probe to verify UID, Android version, and command reach before writing radio settings.");
-        shizukuOutputView.setTypeface(Typeface.MONOSPACE);
+        formatMonospace(shizukuOutputView, 11);
         shizukuOutputView.setTextIsSelectable(true);
         card.addView(shizukuOutputView);
         Button copyOutput = button("Copy output", Color.rgb(24, 45, 58), Color.WHITE);
@@ -3043,6 +3416,26 @@ public class MainActivity extends Activity {
             Shizuku.addBinderDeadListener(shizukuBinderDeadListener);
         } catch (Throwable ignored) {
         }
+        if (basebandManager == null) {
+            basebandManager = new PrivilegedTelephonyBasebandManager();
+            basebandManager.initializePrivilegeContext(new PrivilegedTelephonyBasebandManager.TelephonyLifecycleCallback() {
+                @Override
+                public void onServiceConnectionStateChanged(boolean isConnectedActive) {
+                    ui.post(() -> {
+                        if (isConnectedActive) {
+                            setShizukuOutput("Privileged Binder proxy online. Type-safe binder transactions active.");
+                        }
+                    });
+                }
+                @Override
+                public void onOperationComplete(boolean success, String response) {
+                    ui.post(() -> {
+                        setShizukuOutput("Binder Mutation:\n" + response);
+                        toast(success ? "Radio mode verified" : "Radio write not verified");
+                    });
+                }
+            });
+        }
     }
 
     private void removeShizukuListener() {
@@ -3051,6 +3444,10 @@ public class MainActivity extends Activity {
             Shizuku.removeBinderReceivedListener(shizukuBinderReceivedListener);
             Shizuku.removeBinderDeadListener(shizukuBinderDeadListener);
         } catch (Throwable ignored) {
+        }
+        if (basebandManager != null) {
+            basebandManager.terminatePrivilegeContext();
+            basebandManager = null;
         }
     }
 
@@ -3325,26 +3722,51 @@ public class MainActivity extends Activity {
             return;
         }
         setShizukuOutput(label + " running...");
-        new Thread(() -> {
+        android.os.AsyncTask.THREAD_POOL_EXECUTOR.execute(() -> {
             StringBuilder output = new StringBuilder("Action: ").append(label).append('\n');
             boolean allWritesStarted = true;
             boolean allVerified = true;
             try {
                 output.append("Write value: ").append(value).append("\n\n");
+                
+                // Bundle setting writes into a single shell command script to minimize process forks
+                StringBuilder script = new StringBuilder();
                 for (String key : keys) {
-                    CommandResult put = runShizukuProcessCapture(new String[]{"/system/bin/settings", "put", "global", key, value}, 5);
-                    output.append("put ").append(key).append(" exit=").append(put.exitCode).append('\n');
-                    if (!put.stdout.trim().isEmpty()) output.append(put.stdout.trim()).append('\n');
-                    if (!put.stderr.trim().isEmpty()) output.append("stderr: ").append(put.stderr.trim()).append('\n');
-                    if (put.exitCode != 0) allWritesStarted = false;
+                    script.append("/system/bin/settings put global ").append(key).append(" ").append(value).append(" ; ");
                 }
-                output.append("\nradio-preferred-network-modes\n");
+                
+                CommandResult put = runShizukuProcessCapture(new String[]{"/system/bin/sh", "-c", script.toString()}, 8);
+                output.append("Batch settings put finished\n");
+                if (!put.stdout.trim().isEmpty()) output.append(put.stdout.trim()).append('\n');
+                if (!put.stderr.trim().isEmpty()) output.append("stderr: ").append(put.stderr.trim()).append('\n');
+                if (put.exitCode != 0) allWritesStarted = false;
+                
+                // Symmetrically invoke type-safe binder mutation if basebandManager is active
+                int valInt = Integer.parseInt(value);
                 for (String key : keys) {
-                    CommandResult get = runShizukuProcessCapture(new String[]{"/system/bin/settings", "get", "global", key}, 5);
-                    String actual = get.stdout.trim();
-                    output.append(key).append("=").append(actual).append('\n');
-                    if (!value.equals(actual)) allVerified = false;
-                    if (!get.stderr.trim().isEmpty()) output.append("stderr: ").append(get.stderr.trim()).append('\n');
+                    int slotId = 0;
+                    if (key.endsWith("1")) slotId = 1;
+                    else if (key.endsWith("2")) slotId = 2;
+                    if (basebandManager != null) {
+                        basebandManager.invokeBasebandRadioMutation(slotId, valInt);
+                    }
+                }
+
+                output.append("\nradio-preferred-network-modes verification:\n");
+                // Bundle settings read
+                StringBuilder readScript = new StringBuilder();
+                for (String key : keys) {
+                    readScript.append("echo -n ").append(key).append("= ; /system/bin/settings get global ").append(key).append(" ; ");
+                }
+                CommandResult get = runShizukuProcessCapture(new String[]{"/system/bin/sh", "-c", readScript.toString()}, 8);
+                output.append(get.stdout.trim()).append('\n');
+                if (!get.stderr.trim().isEmpty()) output.append("stderr: ").append(get.stderr.trim()).append('\n');
+                
+                // Verify all keys
+                for (String key : keys) {
+                    if (!get.stdout.contains(key + "=" + value)) {
+                        allVerified = false;
+                    }
                 }
             } catch (Throwable e) {
                 allWritesStarted = false;
@@ -3360,7 +3782,7 @@ public class MainActivity extends Activity {
                 setShizukuOutput(finalOutput);
                 toast(finalWritesStarted && finalVerified ? "Radio mode verified" : "Radio write not verified");
             });
-        }, "shizuku-settings-write").start();
+        });
     }
 
     private void runShizukuRadioCommand(String label, String command, boolean writeAction) {
@@ -3382,12 +3804,15 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             String output;
             int exitCode = -1;
+            Process process = null;
+            Thread stdoutThread = null;
+            Thread stderrThread = null;
             try {
-                Process process = startShizukuShellProcess(command);
+                process = startShizukuShellProcess(command);
                 StringBuilder stdout = new StringBuilder();
                 StringBuilder stderr = new StringBuilder();
-                Thread stdoutThread = collectProcessStream(process.getInputStream(), stdout);
-                Thread stderrThread = collectProcessStream(process.getErrorStream(), stderr);
+                stdoutThread = collectProcessStream(process.getInputStream(), stdout);
+                stderrThread = collectProcessStream(process.getErrorStream(), stderr);
                 boolean finished = process.waitFor(9, java.util.concurrent.TimeUnit.SECONDS);
                 if (!finished) {
                     process.destroyForcibly();
@@ -3406,6 +3831,13 @@ public class MainActivity extends Activity {
                 joinQuietly(stderrThread);
             } catch (Throwable e) {
                 output = "Action: " + label + "\nFailed: " + e.getClass().getSimpleName() + ": " + safeMessage(e);
+            } finally {
+                if (process != null) {
+                    try { process.getInputStream().close(); } catch (Throwable ignored) {}
+                    try { process.getErrorStream().close(); } catch (Throwable ignored) {}
+                    try { process.getOutputStream().close(); } catch (Throwable ignored) {}
+                    process.destroy();
+                }
             }
             final String finalOutput = output;
             final int finalExitCode = exitCode;
@@ -3449,6 +3881,9 @@ public class MainActivity extends Activity {
     }
 
     private Process startShizukuShellProcess(String command) throws Exception {
+        if (!buildBridgeProbeCommand().equals(command) && !buildReadModesCommand().equals(command)) {
+            throw new SecurityException("Command execution rejected: Unsafe shell command input.");
+        }
         return startShizukuProcess(new String[]{"/system/bin/sh", "-c", command});
     }
 
@@ -3463,22 +3898,34 @@ public class MainActivity extends Activity {
     }
 
     private CommandResult runShizukuProcessCapture(String[] command, int timeoutSeconds) throws Exception {
-        Process process = startShizukuProcess(command);
+        Process process = null;
+        Thread stdoutThread = null;
+        Thread stderrThread = null;
         StringBuilder stdout = new StringBuilder();
         StringBuilder stderr = new StringBuilder();
-        Thread stdoutThread = collectProcessStream(process.getInputStream(), stdout);
-        Thread stderrThread = collectProcessStream(process.getErrorStream(), stderr);
-        boolean finished = process.waitFor(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS);
-        if (!finished) {
-            process.destroyForcibly();
+        try {
+            process = startShizukuProcess(command);
+            stdoutThread = collectProcessStream(process.getInputStream(), stdout);
+            stderrThread = collectProcessStream(process.getErrorStream(), stderr);
+            boolean finished = process.waitFor(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                joinQuietly(stdoutThread);
+                joinQuietly(stderrThread);
+                return new CommandResult(-2, bufferedText(stdout), bufferedText(stderr));
+            }
+            int exitCode = process.exitValue();
             joinQuietly(stdoutThread);
             joinQuietly(stderrThread);
-            return new CommandResult(-2, bufferedText(stdout), bufferedText(stderr));
+            return new CommandResult(exitCode, bufferedText(stdout), bufferedText(stderr));
+        } finally {
+            if (process != null) {
+                try { process.getInputStream().close(); } catch (Throwable ignored) {}
+                try { process.getErrorStream().close(); } catch (Throwable ignored) {}
+                try { process.getOutputStream().close(); } catch (Throwable ignored) {}
+                process.destroy();
+            }
         }
-        int exitCode = process.exitValue();
-        joinQuietly(stdoutThread);
-        joinQuietly(stderrThread);
-        return new CommandResult(exitCode, bufferedText(stdout), bufferedText(stderr));
     }
 
     private static class CommandResult {
@@ -3600,15 +4047,78 @@ public class MainActivity extends Activity {
     }
     private boolean highContrastMode() { return densityMode == 1; }
     private boolean compactMode() { return densityMode == 2; }
+    private void formatMonospace(TextView v, int sp) {
+        if (v == null) return;
+        v.setTypeface(Typeface.MONOSPACE);
+        v.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        if (Build.VERSION.SDK_INT >= 21) {
+            v.setLetterSpacing(0.08f);
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            v.setLineHeight(dp(sp + 6));
+        }
+    }
     private GradientDrawable glassBg(int fill, int stroke) {
         int fillAlpha = highContrastMode() ? 245 : 215;
         int shineAlpha = highContrastMode() ? 40 : 120;
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
                 new int[]{Color.argb(fillAlpha, Color.red(fill), Color.green(fill), Color.blue(fill)), Color.argb(shineAlpha, 255, 255, 255)});
         g.setCornerRadius(dp(compactMode() ? 7 : 10));
-        g.setStroke(highContrastMode() ? dp(2) : dp(1), stroke);
+        g.setStroke(highContrastMode() ? dp(2) : 1, stroke);
         return g;
     }
     private void setOuterMargin(View v, int l, int t, int r, int b) { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.setMargins(l, t, r, b); v.setLayoutParams(lp); }
+
+    private class ResultsAdapter extends RecyclerView.Adapter<ResultsAdapter.ViewHolder> {
+        private final List<Result> mItems = new ArrayList<>();
+        private boolean mIsEmptyState = false;
+
+        public void setResults(List<Result> items) {
+            mItems.clear();
+            if (items.isEmpty()) {
+                mIsEmptyState = true;
+            } else {
+                mIsEmptyState = false;
+                mItems.addAll(items);
+            }
+            notifyDataSetChanged();
+        }
+
+        @Override
+        public int getItemViewType(int position) {
+            return mIsEmptyState ? 0 : 1;
+        }
+
+        @Override
+        public ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            FrameLayout container = new FrameLayout(parent.getContext());
+            container.setLayoutParams(new RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+            return new ViewHolder(container);
+        }
+
+        @Override
+        public void onBindViewHolder(ViewHolder holder, int position) {
+            FrameLayout container = (FrameLayout) holder.itemView;
+            container.removeAllViews();
+            if (mIsEmptyState) {
+                container.addView(emptyResultsView());
+            } else {
+                container.addView(resultView(mItems.get(position)));
+            }
+        }
+
+        @Override
+        public int getItemCount() {
+            return mIsEmptyState ? 1 : mItems.size();
+        }
+
+        class ViewHolder extends RecyclerView.ViewHolder {
+            ViewHolder(View itemView) {
+                super(itemView);
+            }
+        }
+    }
 
 }
