@@ -7,7 +7,7 @@ Welcome to **MaybeEdgeScanner**! This guide is designed to help operators, netwo
 ## 1. Quick Setup & Installation
 
 ### 1.1 Device Compatibility & Requirements
-* **Android OS**: Android 8.0 (API 26) through modern Android 16-era releases.
+* **Android OS**: Android 7.0 (API 24) through modern Android 16-era releases.
 * **Hardware Requirements**: Minimum 3GB RAM recommended for large multi-threaded scans.
 * **Privileged State**: Sui/Shizuku is fully optional but highly recommended to access mobile cellular diagnostics and baseband mutators.
 
@@ -42,6 +42,7 @@ This is your scanning command center:
 * **SNI Route-Pairing Mode**:
   - *Target SNI Input*: Manual entry for specific SNI hosts to pair with the targets.
   - *Multi-SNI Checkbox*: Toggles between checking only the primary target domain or expanding probes across all bundled and custom SNI host configurations.
+  - *Current Runtime Scope*: Route plugins are validated and attached as scan metadata; active route tunnel attachment is not yet enabled in the sidecar runtime.
 * **Manual Targets input**: Enter custom target ranges (IPv4, IPv6, hostnames, CIDRs, or hyphen ranges) separated by spaces or commas.
 * **Performance Posture (Source-Health panel)**: Evaluates target configurations dynamically and indicates whether your configuration represents a `LIGHT` (1-16 threads), `BALANCED` (17-64 threads), or `HIGH` (65+ threads) load on your device's battery and processor.
 
@@ -82,7 +83,7 @@ The manual targets text area in `Sources` accepts complex inputs. You can combin
 
 MaybeEdgeScanner supports four core auditing profiles:
 1. **Quick TCP**: Measures basic port reachability and latency. Extremely fast, ideal for checking general uptime.
-2. **Standard TLS**: Performs complete TLS 1.3 handshakes, extracts certificate authorities, verified names, and cipher suites.
+2. **Standard TLS**: Performs complete TLS handshakes, extracts certificate chain observations (issuer/SAN/CN when available), and cipher-suite details.
 3. **Deep HTTP**: Upgrades the TCP/TLS probe to send a full `HEAD` request, verifying remote HTTP responses, server headers, and ALPN flags.
 4. **Verify CDN Edge**: Queries CDN metadata, checking headers for cache and provider identity.
 

@@ -32,50 +32,72 @@ import (
 )
 
 type scanRequest struct {
-	Targets        []string `json:"targets"`
-	SNIs           []string `json:"snis"`
-	Ports          []int    `json:"ports"`
-	HTTPPath       string   `json:"http_path"`
-	Threads        int      `json:"threads"`
-	TimeoutMS      int      `json:"timeout_ms"`
-	MaxTargets     int      `json:"max_targets"`
-	MaxCIDRHosts   int      `json:"max_cidr_hosts"`
-	BatchSize      int      `json:"batch_size"`
-	MultiSNI       bool     `json:"multi_sni"`
-	HTTPProbe      bool     `json:"http_probe"`
-	Randomize      bool     `json:"randomize"`
-	RatePerSecond  int      `json:"rate_per_second"`
-	JitterMS       int      `json:"jitter_ms"`
-	RespectSafety  bool     `json:"respect_safety"`
-	TLSFingerprint string   `json:"tls_fingerprint"`
-	EnablePayloadSplitting bool `json:"enable_payload_splitting"`
-	SplitByteBoundary      int  `json:"split_byte_boundary"`
+	Targets                []string             `json:"targets"`
+	SNIs                   []string             `json:"snis"`
+	Ports                  []int                `json:"ports"`
+	RoutePlugin            *RoutingPluginConfig `json:"route_plugin,omitempty"`
+	HTTPPath               string               `json:"http_path"`
+	Threads                int                  `json:"threads"`
+	TimeoutMS              int                  `json:"timeout_ms"`
+	MaxTargets             int                  `json:"max_targets"`
+	MaxCIDRHosts           int                  `json:"max_cidr_hosts"`
+	BatchSize              int                  `json:"batch_size"`
+	MultiSNI               bool                 `json:"multi_sni"`
+	HTTPProbe              bool                 `json:"http_probe"`
+	Randomize              bool                 `json:"randomize"`
+	RatePerSecond          int                  `json:"rate_per_second"`
+	JitterMS               int                  `json:"jitter_ms"`
+	RespectSafety          bool                 `json:"respect_safety"`
+	SafetyPreset           string               `json:"safety_preset,omitempty"`
+	BroadScanConfirmed     bool                 `json:"broad_scan_confirmed,omitempty"`
+	TLSFingerprint         string               `json:"tls_fingerprint"`
+	EnablePayloadSplitting bool                 `json:"enable_payload_splitting"`
+	SplitByteBoundary      int                  `json:"split_byte_boundary"`
 }
 
 type result struct {
-	Target         string `json:"target"`
-	IP             string `json:"ip"`
-	Port           int    `json:"port"`
-	SNI            string `json:"sni"`
-	TCP            bool   `json:"tcp"`
-	TLS            bool   `json:"tls"`
-	HTTP           bool   `json:"http"`
-	HTTPStatus     int    `json:"http_status"`
-	TLSVersion     string `json:"tls_version,omitempty"`
-	TLSCipher      string `json:"tls_cipher,omitempty"`
-	CertVerified   bool   `json:"cert_verified"`
-	ALPN           string `json:"alpn,omitempty"`
-	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
-	CertSubject    string `json:"cert_subject,omitempty"`
-	ServerHeader   string `json:"server_header,omitempty"`
-	CacheHeader    string `json:"cache_header,omitempty"`
-	AltSvc         string `json:"alt_svc,omitempty"`
-	HTTP3Hint      bool   `json:"http3_hint,omitempty"`
-	CDN            string `json:"cdn"`
-	LatencyMS      int64  `json:"latency_ms"`
-	Score          int    `json:"score"`
-	Error          string `json:"error,omitempty"`
-	BatchNumber    int    `json:"batch_number"`
+	Target              string `json:"target"`
+	IP                  string `json:"ip"`
+	Port                int    `json:"port"`
+	SNI                 string `json:"sni"`
+	TCP                 bool   `json:"tcp"`
+	TLS                 bool   `json:"tls"`
+	HTTP                bool   `json:"http"`
+	HTTPStatus          int    `json:"http_status"`
+	TLSVersion          string `json:"tls_version,omitempty"`
+	TLSCipher           string `json:"tls_cipher,omitempty"`
+	CertVerified        bool   `json:"cert_verified"`
+	ALPN                string `json:"alpn,omitempty"`
+	TLSFingerprint      string `json:"tls_fingerprint,omitempty"`
+	CertSubject         string `json:"cert_subject,omitempty"`
+	ServerHeader        string `json:"server_header,omitempty"`
+	CacheHeader         string `json:"cache_header,omitempty"`
+	AltSvc              string `json:"alt_svc,omitempty"`
+	HTTP3Hint           bool   `json:"http3_hint,omitempty"`
+	CDN                 string `json:"cdn"`
+	ProviderID          string `json:"provider_id,omitempty"`
+	ProviderName        string `json:"provider_name,omitempty"`
+	ProviderPrefix      string `json:"provider_prefix,omitempty"`
+	ProviderConfidence  string `json:"provider_confidence,omitempty"`
+	ProviderCorpusID    string `json:"provider_corpus_id,omitempty"`
+	ProviderSource      string `json:"provider_source,omitempty"`
+	RouteID             string `json:"route_id,omitempty"`
+	RouteProviderID     string `json:"route_provider_id,omitempty"`
+	RouteBinding        string `json:"route_binding,omitempty"`
+	RouteProtocolMode   string `json:"route_protocol_mode,omitempty"`
+	RouteAuthMode       string `json:"route_auth_mode,omitempty"`
+	RouteDNSPolicy      string `json:"route_dns_policy,omitempty"`
+	RouteStrategy       string `json:"route_strategy,omitempty"`
+	RouteProviderChain  string `json:"route_provider_chain,omitempty"`
+	RouteFrontingPolicy string `json:"route_fronting_policy,omitempty"`
+	RouteLANSharing     bool   `json:"route_lan_sharing,omitempty"`
+	RouteBeastMode      bool   `json:"route_beast_mode,omitempty"`
+	RouteReadiness      string `json:"route_readiness,omitempty"`
+	RouteErrorCode      string `json:"route_error_code,omitempty"`
+	LatencyMS           int64  `json:"latency_ms"`
+	Score               int    `json:"score"`
+	Error               string `json:"error,omitempty"`
+	BatchNumber         int    `json:"batch_number"`
 }
 
 type stats struct {
@@ -88,6 +110,16 @@ type stats struct {
 	Batches     int `json:"batches"`
 	Batch       int `json:"batch"`
 }
+
+const (
+	maxScanRequestThreads    = 8192
+	maxScanRequestTimeoutMS  = 120000
+	maxScanRequestBatchSize  = 65536
+	maxScanRequestMaxTargets = 200000
+	maxScanRequestMaxCIDR    = 65536
+	maxScanRequestRatePerSec = 200000
+	maxScanRequestJitterMS   = 60000
+)
 
 var (
 	activeCancelMu       sync.Mutex
@@ -106,6 +138,7 @@ var (
 	metricBackoffEvents  atomic.Uint64
 	globalBackoffNS      atomic.Int64
 	safetyCIDRPrefixes   = loadSafetyPrefixes()
+	activeControlPlane   *sidecarControlPlane
 )
 
 type DPIObfuscationOptions struct {
@@ -242,13 +275,23 @@ func initCDNIndex() {
 
 func main() {
 	initCDNIndex()
+	if err := initProviderCorpusObserver(); err != nil {
+		slog.Warn("provider corpus observer disabled", "error", err)
+	}
+	control := newSidecarControlPlane()
+	activeControlPlane = control
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", index)
 	mux.HandleFunc("/grafana-dashboard.json", grafanaDashboard)
-	mux.HandleFunc("/api/scan", scan)
-	mux.HandleFunc("/api/dns", scanDNS)
-	mux.HandleFunc("/api/stop", stop)
-	mux.HandleFunc("/api/export/nmap", exportNmap)
+	mux.HandleFunc("/api/scan", control.requireMutationAuth(scan))
+	mux.HandleFunc("/api/dns", control.requireMutationAuth(scanDNS))
+	mux.HandleFunc("/api/stop", control.requireMutationAuth(control.stop))
+	mux.HandleFunc("/api/shutdown", control.requireMutationAuth(control.shutdown))
+	mux.HandleFunc("/api/heartbeat", control.heartbeat)
+	mux.HandleFunc("/api/plugins", routingPlugins)
+	mux.HandleFunc("/api/plugins/validate", control.requireMutationAuth(validateRoutingPlugin))
+	mux.HandleFunc("/api/provider-corpus", providerCorpusStatusHandler)
+	mux.HandleFunc("/api/export/nmap", control.requireMutationAuth(exportNmap))
 	mux.HandleFunc("/metrics", metrics)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		var mem runtime.MemStats
@@ -261,6 +304,7 @@ func main() {
 
 	addr := "127.0.0.1:10808"
 	srv := &http.Server{Addr: addr, Handler: mux}
+	control.setShutdown(srv.Shutdown)
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stopSignals()
 	go func() {
@@ -288,27 +332,31 @@ func index(w http.ResponseWriter, _ *http.Request) {
 	page := `<!doctype html><html><head><meta name=viewport content="width=device-width,initial-scale=1"><title>MaybeEdgeScanner Sidecar</title>
 <style>
 :root{color-scheme:dark;--bg:#071018;--panel:rgba(16,27,37,.82);--line:#263948;--text:#eef6fb;--muted:#8aa2b3;--accent:#32d0bd;--good:#42e6aa;--warn:#ffd166;--bad:#ff8585}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 10%,#13364a,transparent 30%),radial-gradient(circle at 90% 0,#26304d,transparent 34%),var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Arial,sans-serif}main{max-width:1280px;margin:auto;padding:22px}.top{display:flex;align-items:end;justify-content:space-between;gap:16px;flex-wrap:wrap}.tabs{display:flex;gap:8px;margin:16px 0}.tab{width:auto;border-color:#34566b;background:#0d1a25;color:#bce7f0}.tab.active{background:var(--accent);color:#04201d}.grid{display:grid;grid-template-columns:350px 1fr;gap:16px}@media(max-width:900px){.grid{grid-template-columns:1fr}}.card{background:var(--panel);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.13);border-radius:14px;padding:16px;box-shadow:0 20px 60px rgba(0,0,0,.22)}textarea,input,select,button{width:100%;border-radius:10px;border:1px solid #31495b;background:#08131d;color:#eaf5fb;padding:10px;margin:6px 0}button{background:var(--accent);color:#04201d;font-weight:800;cursor:pointer}.danger{background:#ff6b6b;color:#270506}.muted{color:var(--muted)}.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bar{height:8px;background:#263948;border-radius:20px;overflow:hidden}.fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),#8ef0d1)}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #203241;text-align:left}th{color:#8aa2b3;position:sticky;top:0;background:#101b25}.ok{color:var(--good)}.bad{color:var(--bad)}.pill{display:inline-block;padding:3px 8px;border-radius:999px;background:#142636;color:#9fc2d7;font-size:12px}.ring{width:104px;height:104px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--accent) 0deg,#263948 0deg);font-weight:900}.ring span{width:78px;height:78px;border-radius:50%;display:grid;place-items:center;background:#071018}.dash{display:grid;grid-template-columns:120px 1fr;gap:14px;align-items:center}.density-compact td,.density-compact th{padding:4px;font-size:12px}.hex{display:grid;grid-template-columns:repeat(32,1fr);gap:2px;margin-top:10px}.cell{aspect-ratio:1;background:#263948;border-radius:3px}.cell.good{background:#42e6aa}.cell.bad{background:#ff8585}.cell.mid{background:#ffd166}</style></head><body><main>
-<div class=top><div><h1>MaybeEdgeScanner Sidecar</h1><p class=muted>Live SNI/IP/CIDR scanner with progress telemetry, safety limits, and filtered data grid.</p></div><div><button onclick="document.body.classList.toggle('density-compact')">Toggle density</button></div></div>
+<div class=top><div><h1>MaybeEdgeScanner Sidecar</h1><p class=muted>Live SNI/IP/CIDR scanner with progress telemetry, safety policy, and filtered data grid.</p></div><div><button onclick="document.body.classList.toggle('density-compact')">Toggle density</button></div></div>
 <div class=tabs><button class="tab active" onclick="showTab('scan',this)">Scan</button><button class=tab onclick="showTab('analytics',this)">Analytics</button><button class=tab onclick="showTab('help',this)">Help</button></div>
 <div class=grid><section class=card><label>Targets</label><textarea id=targets rows=11>{{.Targets}}</textarea><label>SNIs</label><textarea id=snis rows=6>{{.SNIs}}</textarea>
-<div class=row><input id=maxTargets type=number value=72000><input id=batchSize type=number value=12000></div><div class=row><input id=threads type=number value=64><input id=timeout type=number value=2500></div>
-<div class=row><input id=ports value="443"><input id=path value="/"></div><select id=tlsFingerprint><option value=rotate>Rotate TLS fingerprint</option><option value=chrome>Chrome ClientHello</option><option value=firefox>Firefox ClientHello</option><option value=ios>iOS ClientHello</option><option value=randomized>Randomized ALPN ClientHello</option><option value=randomized-no-alpn>Randomized no-ALPN ClientHello</option></select><div class=row><input id=rate type=number value=250 placeholder="Rate/sec"><input id=jitter type=number value=25 placeholder="Jitter ms"></div>
+<div class=row><input id=maxTargets type=number value=72000><input id=batchSize type=number value=12000></div><div class=row><input id=threads type=number value=64><input id=timeout type=number value=2500></div><input id=visibleRows type=number value=1000 placeholder="Visible rows">
+<div class=row><input id=ports value="443"><input id=path value="/"></div><select id=tlsFingerprint><option value=rotate>Rotate TLS fingerprint</option><option value=chrome>Chrome ClientHello</option><option value=firefox>Firefox ClientHello</option><option value=ios>iOS ClientHello</option><option value=randomized>Randomized ALPN ClientHello</option><option value=randomized-no-alpn>Randomized no-ALPN ClientHello</option></select><select id=safetyPreset><option value=legacy_compat>Legacy compatibility policy</option><option value=safe_quick>Safe quick policy</option></select><div class=row><input id=rate type=number value=250 placeholder="Rate/sec"><input id=jitter type=number value=25 placeholder="Jitter ms"></div>
 <label><input id=multi type=checkbox checked style="width:auto"> Multi-SNI</label><label><input id=http type=checkbox checked style="width:auto"> HTTP HEAD probe</label><label><input id=randomize type=checkbox checked style="width:auto"> Randomize target order</label><label><input id=safety type=checkbox checked style="width:auto"> Block reserved/unsafe ranges</label>
 <button onclick=start()>Start Scan</button><button class=danger onclick=stop()>Stop</button></section>
-<section class=card id=tab-scan><div class=dash><div class=ring id=ring><span id=ringText>0%</span></div><div><h3 id=status>Ready</h3><div class=bar><div class=fill id=fill></div></div><p id=metrics class=muted></p></div></div><table><thead><tr><th>Target</th><th>IP</th><th>SNI</th><th>Checks</th><th>ms</th><th>ALPN</th><th>CDN</th></tr></thead><tbody id=rows></tbody></table></section>
+<section class=card id=tab-scan><div class=dash><div class=ring id=ring><span id=ringText>0%</span></div><div><h3 id=status>Ready</h3><div class=bar><div class=fill id=fill></div></div><p id=metrics class=muted></p></div></div><table><thead><tr><th>Target</th><th>IP</th><th>SNI</th><th>Checks</th><th>ms</th><th>ALPN</th><th>CDN</th><th>Provider</th></tr></thead><tbody id=rows></tbody></table></section>
 <section class=card id=tab-analytics style="display:none"><h3>Analytics</h3><p class=muted id=analyticsText>No scan yet.</p><div class=hex id=hex></div></section>
 <section class=card id=tab-help style="display:none"><h3>Safety and UX</h3><p class=muted>Rate/sec and jitter reduce IDS-like sequential bursts. Safety mode drops private, loopback, multicast, and default-route CIDRs. Use exports or /metrics for external dashboards.</p></section></div>
 <script>
+function authHeaders(extra){return Object.assign({},extra||{})}
 let rows=[];function v(id){return document.getElementById(id).value}function set(s){document.getElementById('status').textContent=s}
 function showTab(id,el){for(let x of ['scan','analytics','help'])document.getElementById('tab-'+x).style.display=x===id?'block':'none';for(let b of document.querySelectorAll('.tab'))b.classList.remove('active');el.classList.add('active')}
-async function start(){rows=[];document.getElementById('rows').innerHTML='';document.getElementById('hex').innerHTML='';set('Starting');let r=await fetch('/api/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({targets:v('targets').split(/[\s,;]+/).filter(Boolean),snis:v('snis').split(/[\s,;]+/).filter(Boolean),ports:v('ports').split(/[\s,;]+/).filter(Boolean).map(Number),http_path:v('path'),tls_fingerprint:v('tlsFingerprint'),max_targets:+v('maxTargets'),batch_size:+v('batchSize'),threads:+v('threads'),timeout_ms:+v('timeout'),rate_per_second:+v('rate'),jitter_ms:+v('jitter'),randomize:document.getElementById('randomize').checked,respect_safety:document.getElementById('safety').checked,multi_sni:document.getElementById('multi').checked,http_probe:document.getElementById('http').checked})});let rd=r.body.getReader(),d=new TextDecoder(),buf='';while(true){let x=await rd.read();if(x.done)break;buf+=d.decode(x.value,{stream:true});let parts=buf.split(/\n/);buf=parts.pop();for(let p of parts){if(!p.trim())continue;let e=JSON.parse(p);if(e.type==='init'){set('Scanning '+e.total+' jobs in '+e.batches+' batches')}if(e.type==='progress'){render(e.result,e.stats)}if(e.type==='done'){set(e.stopped?'Stopped':'Done')}}}}
-async function stop(){await fetch('/api/stop',{method:'POST'});set('Stopping')}
+async function start(){rows=[];document.getElementById('rows').innerHTML='';document.getElementById('hex').innerHTML='';set('Starting');let r=await fetch('/api/scan',{method:'POST',headers:authHeaders({'content-type':'application/json'}),body:JSON.stringify({targets:v('targets').split(/[\s,;]+/).filter(Boolean),snis:v('snis').split(/[\s,;]+/).filter(Boolean),ports:v('ports').split(/[\s,;]+/).filter(Boolean).map(Number),http_path:v('path'),tls_fingerprint:v('tlsFingerprint'),safety_preset:v('safetyPreset'),max_targets:+v('maxTargets'),batch_size:+v('batchSize'),threads:+v('threads'),timeout_ms:+v('timeout'),rate_per_second:+v('rate'),jitter_ms:+v('jitter'),randomize:document.getElementById('randomize').checked,respect_safety:document.getElementById('safety').checked,multi_sni:document.getElementById('multi').checked,http_probe:document.getElementById('http').checked})});let rd=r.body.getReader(),d=new TextDecoder(),buf='';while(true){let x=await rd.read();if(x.done)break;buf+=d.decode(x.value,{stream:true});let parts=buf.split(/\n/);buf=parts.pop();for(let p of parts){if(!p.trim())continue;let e=JSON.parse(p);if(e.type==='init'){let sp=e.safety_policy||{};set('Scanning '+e.total+' jobs in '+e.batches+' batches · '+(sp.preset||'policy'))}if(e.type==='progress'){render(e.result,e.stats)}if(e.type==='done'){set(e.stopped?'Stopped':'Done')}}}}
+async function stop(){await fetch('/api/stop',{method:'POST',headers:authHeaders()});set('Stopping')}
 function esc(x){return String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-function render(r,s){rows.push(r);rows.sort((a,b)=>b.score-a.score||a.latency_ms-b.latency_ms);let pct=s.checked*100/Math.max(1,s.total);document.getElementById('fill').style.width=pct+'%';document.getElementById('ring').style.background='conic-gradient(var(--accent) '+(pct*3.6)+'deg,#263948 0deg)';document.getElementById('ringText').textContent=Math.round(pct)+'%';document.getElementById('metrics').textContent='Checked '+s.checked+'/'+s.total+' · working '+s.working+' · TLS '+s.tls_working+' · HTTP '+s.http_working+' · batch '+s.batch+'/'+s.batches;document.getElementById('rows').innerHTML=rows.slice(0,250).map(x=>'<tr title="'+esc((x.tls_version||'')+' '+(x.cert_subject||''))+'"><td>'+esc(x.target)+'</td><td>'+esc(x.ip+':'+x.port)+'</td><td>'+esc(x.sni||'--')+'</td><td><span class="'+(x.tcp?'ok':'bad')+'">TCP</span> <span class="'+(x.tls?'ok':'bad')+'">TLS</span> <span class="'+(x.http?'ok':'bad')+'">HTTP</span></td><td>'+(x.latency_ms||'')+'</td><td>'+esc(x.alpn||'--')+'</td><td><span class=pill>'+esc(x.cdn)+'</span></td></tr>').join('');document.getElementById('analyticsText').textContent='Top score '+(rows[0]?.score||0)+' · CDN groups '+new Set(rows.map(x=>x.cdn)).size;let h=document.getElementById('hex');if(h.childElementCount<1024){let c=document.createElement('div');c.className='cell '+(r.http?'good':r.tls||r.tcp?'mid':'bad');h.appendChild(c)}}
+function render(r,s){rows.push(r);rows.sort((a,b)=>b.score-a.score||a.latency_ms-b.latency_ms);let visible=Math.max(1,+v('visibleRows')||rows.length);let shown=rows.slice(0,visible);let pct=s.checked*100/Math.max(1,s.total);document.getElementById('fill').style.width=pct+'%';document.getElementById('ring').style.background='conic-gradient(var(--accent) '+(pct*3.6)+'deg,#263948 0deg)';document.getElementById('ringText').textContent=Math.round(pct)+'%';document.getElementById('metrics').textContent='Checked '+s.checked+'/'+s.total+' · working '+s.working+' · TLS '+s.tls_working+' · HTTP '+s.http_working+' · batch '+s.batch+'/'+s.batches+' · showing '+shown.length+'/'+rows.length;document.getElementById('rows').innerHTML=shown.map(x=>'<tr title="'+esc((x.tls_version||'')+' '+(x.cert_subject||''))+'"><td>'+esc(x.target)+'</td><td>'+esc(x.ip+':'+x.port)+'</td><td>'+esc(x.sni||'--')+'</td><td><span class="'+(x.tcp?'ok':'bad')+'">TCP</span> <span class="'+(x.tls?'ok':'bad')+'">TLS</span> <span class="'+(x.http?'ok':'bad')+'">HTTP</span></td><td>'+(x.latency_ms||'')+'</td><td>'+esc(x.alpn||'--')+'</td><td><span class=pill>'+esc(x.cdn)+'</span></td><td><span class=pill title="'+esc(x.provider_prefix||'')+'">'+esc(x.provider_id||'--')+'</span></td></tr>').join('');document.getElementById('analyticsText').textContent='Top score '+(rows[0]?.score||0)+' · CDN groups '+new Set(rows.map(x=>x.cdn)).size+' · provider groups '+new Set(rows.map(x=>x.provider_id).filter(Boolean)).size;let h=document.getElementById('hex');{let c=document.createElement('div');c.className='cell '+(r.http?'good':r.tls||r.tcp?'mid':'bad');h.appendChild(c)}}
 </script></main></body></html>`
 	data := map[string]string{
 		"Targets": strings.Join(loadLines("assets/default_edges_extra.txt"), "\n"),
 		"SNIs":    strings.Join(loadLines("assets/default_snis.txt"), "\n"),
+	}
+	if activeControlPlane != nil {
+		activeControlPlane.setBrowserCookie(w)
 	}
 	_ = template.Must(template.New("index").Parse(page)).Execute(w, data)
 }
@@ -329,13 +377,29 @@ func scan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+	if activeControlPlane != nil {
+		activeControlPlane.setState("scan_starting")
+		defer activeControlPlane.setState("idle")
+	}
 	var req scanRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writePublicBadRequest(w, "invalid scan request body")
 		return
 	}
 	metricScansStarted.Add(1)
+	if activeControlPlane != nil {
+		activeControlPlane.setState("scan_running")
+	}
+	if err := req.validateCaps(); err != nil {
+		writePublicBadRequest(w, "scan request exceeds sidecar safety limits")
+		return
+	}
 	req.normalize()
+	routePlan, err := validateScanRoutePlugin(req.RoutePlugin)
+	if err != nil {
+		writePluginValidationError(w, "ROUTE_PLUGIN_INVALID", "route_plugin", publicPluginValidationMessage(err))
+		return
+	}
 	globalBackoffNS.Store(0)
 	explicitTargets := len(req.Targets) > 0
 	targets := expandTargets(req.Targets, req.MaxTargets, req.MaxCIDRHosts, req.RespectSafety)
@@ -355,7 +419,9 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	if req.Randomize {
 		shuffleStrings(targets)
 	}
+	safetyPolicy := safetyPolicyObservation(req, len(targets))
 	warnings := scanWarnings(req, targets)
+	warnings = append(warnings, safetyPolicy.Warnings...)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	activeCancelMu.Lock()
@@ -381,7 +447,10 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	enc := json.NewEncoder(w)
 	jobsTotal := len(targets) * len(req.Ports)
 	st := stats{Total: jobsTotal, Batches: int(math.Ceil(float64(len(targets)) / float64(req.BatchSize)))}
-	if err := enc.Encode(map[string]any{"type": "init", "total": st.Total, "batches": st.Batches, "warnings": warnings}); err != nil {
+	if routePlan.Valid {
+		warnings = append(warnings, "Route plugin metadata is attached to results; live route attachment remains disabled until readiness observers report attachable routes.")
+	}
+	if err := enc.Encode(map[string]any{"type": "init", "total": st.Total, "batches": st.Batches, "warnings": warnings, "safety_policy": safetyPolicy, "route_plugin": routePlan.Public()}); err != nil {
 		cancel()
 		return
 	}
@@ -398,7 +467,7 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	for start, batchNo := 0, 1; start < len(targets) && ctx.Err() == nil; start, batchNo = start+req.BatchSize, batchNo+1 {
 		end := min(len(targets), start+req.BatchSize)
 		jobs := make(chan string)
-		results := make(chan result, req.BatchSize)
+		results := make(chan result, resultBufferSize(req.BatchSize))
 		var wg sync.WaitGroup
 		for i := 0; i < min(req.Threads, end-start); i++ {
 			wg.Add(1)
@@ -422,6 +491,7 @@ func scan(w http.ResponseWriter, r *http.Request) {
 						}
 						waitRate(ctx, limiter, req.JitterMS)
 						res := probe(ctx, t, port, req, batchNo)
+						routePlan.ApplyToResult(&res)
 						select {
 						case <-ctx.Done():
 							return
@@ -512,13 +582,139 @@ func metrics(w http.ResponseWriter, _ *http.Request) {
 	_, _ = fmt.Fprintf(w, "maybeedgescanner_heap_bytes %d\n", mem.HeapAlloc)
 }
 
-func stop(w http.ResponseWriter, _ *http.Request) {
-	activeCancelMu.Lock()
-	if activeCancel != nil {
-		activeCancel()
+func routingPlugins(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
 	}
-	activeCancelMu.Unlock()
-	_ = json.NewEncoder(w).Encode(map[string]any{"status": "stopping"})
+	body, err := routingPluginsJSON()
+	if err != nil {
+		http.Error(w, "routing plugin registry unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(body)
+}
+
+func providerCorpusStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	status, ok := providerCorpusStore.Status(time.Now())
+	if !ok {
+		http.Error(w, "provider corpus status unavailable", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(status)
+}
+
+func validateRoutingPlugin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	var cfg RoutingPluginConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writePluginValidationError(w, "PLUGIN_CONFIG_MALFORMED", "request_body", "invalid plugin validation request body")
+		return
+	}
+	registry, err := defaultRoutingPluginRegistry()
+	if err != nil {
+		writePluginValidationError(w, "PLUGIN_REGISTRY_UNAVAILABLE", "registry", "routing plugin registry unavailable")
+		return
+	}
+	result, err := validateRoutingPluginConfig(registry, cfg)
+	if err != nil {
+		writePluginValidationError(w, "PLUGIN_CONFIG_INVALID", "config", publicPluginValidationMessage(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+func writePluginValidationError(w http.ResponseWriter, code, field, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"schema_version": 1,
+		"valid":          false,
+		"error_code":     code,
+		"field":          field,
+		"message":        message,
+	})
+}
+
+func writePublicBadRequest(w http.ResponseWriter, message string) {
+	http.Error(w, message, http.StatusBadRequest)
+}
+
+type scanRoutePlan struct {
+	Valid      bool                          `json:"valid"`
+	Validation RoutingPluginConfigValidation `json:"validation,omitempty"`
+}
+
+func validateScanRoutePlugin(cfg *RoutingPluginConfig) (scanRoutePlan, error) {
+	if cfg == nil || strings.TrimSpace(cfg.PluginID) == "" {
+		return scanRoutePlan{}, nil
+	}
+	registry, err := defaultRoutingPluginRegistry()
+	if err != nil {
+		return scanRoutePlan{}, err
+	}
+	validation, err := validateRoutingPluginConfig(registry, *cfg)
+	if err != nil {
+		return scanRoutePlan{}, err
+	}
+	return scanRoutePlan{Valid: true, Validation: validation}, nil
+}
+
+func (p scanRoutePlan) Public() any {
+	if !p.Valid {
+		return nil
+	}
+	return p.Validation
+}
+
+func (p scanRoutePlan) ApplyToResult(res *result) {
+	if res == nil || !p.Valid {
+		return
+	}
+	obs := p.Validation.Observation
+	res.RouteID = p.Validation.RouteID
+	if obs.ProviderID != nil {
+		res.RouteProviderID = *obs.ProviderID
+	}
+	res.RouteBinding = p.Validation.RouteBinding
+	res.RouteProtocolMode = p.Validation.ProtocolMode
+	res.RouteAuthMode = p.Validation.AuthMode
+	res.RouteDNSPolicy = p.Validation.DNSPolicy
+	res.RouteStrategy = p.Validation.RouteStrategy
+	res.RouteProviderChain = p.Validation.ProviderChain
+	res.RouteFrontingPolicy = p.Validation.FrontingPolicy
+	res.RouteLANSharing = p.Validation.LANSharing
+	res.RouteBeastMode = p.Validation.BeastMode
+	res.RouteReadiness = obs.ReadinessState
+	if obs.ErrorCode != nil {
+		res.RouteErrorCode = *obs.ErrorCode
+	}
+}
+
+func publicPluginValidationMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, errPluginConfig):
+		return "routing plugin configuration is invalid; inspect error_code, field, and local diagnostics"
+	case errors.Is(err, errPluginDescriptor):
+		return "routing plugin registry is invalid"
+	case errors.Is(err, errRouteValidation):
+		return "route configuration is invalid"
+	default:
+		return "routing plugin validation failed"
+	}
 }
 
 func exportNmap(w http.ResponseWriter, r *http.Request) {
@@ -528,7 +724,7 @@ func exportNmap(w http.ResponseWriter, r *http.Request) {
 	}
 	var rows []result
 	if err := json.NewDecoder(r.Body).Decode(&rows); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writePublicBadRequest(w, "invalid export request body")
 		return
 	}
 	w.Header().Set("Content-Type", "application/xml")
@@ -605,16 +801,10 @@ func (r *scanRequest) normalize() {
 	if r.MaxTargets <= 0 {
 		r.MaxTargets = 72000
 	}
-	if r.MaxTargets > 144000 {
-		r.MaxTargets = 144000
-	}
 	if r.MaxCIDRHosts <= 0 {
 		r.MaxCIDRHosts = min(r.MaxTargets, 4096)
 	}
-	if r.MaxCIDRHosts > 16384 {
-		r.MaxCIDRHosts = 16384
-	}
-	if r.BatchSize <= 0 || r.BatchSize > r.MaxTargets {
+	if r.BatchSize <= 0 {
 		r.BatchSize = min(12000, r.MaxTargets)
 	}
 	if r.RatePerSecond < 0 {
@@ -623,7 +813,33 @@ func (r *scanRequest) normalize() {
 	if r.JitterMS < 0 {
 		r.JitterMS = 0
 	}
+	r.applySafetyPreset()
 	r.TLSFingerprint = normalizeTLSFingerprint(r.TLSFingerprint)
+}
+
+func (r scanRequest) validateCaps() error {
+	if r.Threads > maxScanRequestThreads {
+		return errors.New("threads exceeds sidecar cap")
+	}
+	if r.TimeoutMS > maxScanRequestTimeoutMS {
+		return errors.New("timeout exceeds sidecar cap")
+	}
+	if r.BatchSize > maxScanRequestBatchSize {
+		return errors.New("batch size exceeds sidecar cap")
+	}
+	if r.MaxTargets > maxScanRequestMaxTargets {
+		return errors.New("max targets exceeds sidecar cap")
+	}
+	if r.MaxCIDRHosts > maxScanRequestMaxCIDR {
+		return errors.New("max cidr hosts exceeds sidecar cap")
+	}
+	if r.RatePerSecond > maxScanRequestRatePerSec {
+		return errors.New("rate exceeds sidecar cap")
+	}
+	if r.JitterMS > maxScanRequestJitterMS {
+		return errors.New("jitter exceeds sidecar cap")
+	}
+	return nil
 }
 
 func probe(ctx context.Context, target string, port int, req scanRequest, batchNo int) result {
@@ -644,6 +860,7 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 			break
 		}
 		res.IP = ip
+		res.applyProviderObservation(observeProvider(ip))
 		res.CDN = detectCDN(ip, sni, "")
 		var tlsAttempted bool
 		var anyTCPOK bool
@@ -922,8 +1139,6 @@ func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, time
 	return conn, true, nil
 }
 
-
-
 func normalizeTLSFingerprint(v string) string {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "", "auto", "rotate":
@@ -1131,10 +1346,6 @@ func expandOneStateful(s string, remaining int, respectSafety bool, seen map[[16
 	}
 	prefix = prefix.Masked()
 	hostBits := prefix.Addr().BitLen() - prefix.Bits()
-	if respectSafety && hostBits > maxAllowedHostBits(prefix.Addr()) {
-		metricSafetySkipped.Add(1)
-		return nil
-	}
 	current := prefix.Addr()
 	if current.Is4() && hostBits > 1 {
 		current = current.Next()
@@ -1220,13 +1431,6 @@ func loadSafetyPrefixes() []netip.Prefix {
 		}
 	}
 	return prefixes
-}
-
-func maxAllowedHostBits(addr netip.Addr) int {
-	if addr.Is4() {
-		return 16
-	}
-	return 20
 }
 
 var readerPool = sync.Pool{New: func() any {
@@ -1336,11 +1540,8 @@ func trackAdaptiveBackoff(recentErrors []string, ratePerSecond int) {
 
 func scanWarnings(req scanRequest, targets []string) []string {
 	var warnings []string
-	if req.Threads > 512 {
-		warnings = append(warnings, "High thread count: monitor file descriptors, battery, and network resets.")
-	}
-	if req.BatchSize > 100000 {
-		warnings = append(warnings, "Very large batch size: UI consumers should stream results and avoid keeping all rows in memory.")
+	if req.BatchSize > resultBufferSize(req.BatchSize) {
+		warnings = append(warnings, "Batch size is preserved; the internal result channel buffer is bounded to protect process memory.")
 	}
 	if req.RatePerSecond == 0 {
 		warnings = append(warnings, "No rate limit configured: scans may look bursty to IDS/IPS systems.")
@@ -1362,6 +1563,13 @@ func scanWarnings(req scanRequest, targets []string) []string {
 	return warnings
 }
 
+func resultBufferSize(batchSize int) int {
+	if batchSize <= 0 {
+		return 1
+	}
+	return min(batchSize, 1048576)
+}
+
 func shuffleStrings(xs []string) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	r.Shuffle(len(xs), func(i, j int) { xs[i], xs[j] = xs[j], xs[i] })
@@ -1371,7 +1579,7 @@ func newRateLimiter(ratePerSecond int) *rate.Limiter {
 	if ratePerSecond <= 0 {
 		return nil
 	}
-	burst := max(1, min(ratePerSecond, 64))
+	burst := max(1, min(ratePerSecond, 512))
 	return rate.NewLimiter(rate.Limit(ratePerSecond), burst)
 }
 

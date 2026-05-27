@@ -11,7 +11,9 @@ public class QuickScanTileService extends TileService {
         Tile tile = getQsTile();
         if (tile != null) {
             tile.setLabel("MaybeEdgeScanner");
-            tile.setSubtitle("Start defaults");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                tile.setSubtitle("Start defaults");
+            }
             tile.setState(Tile.STATE_INACTIVE);
             tile.updateTile();
         }
@@ -26,12 +28,7 @@ public class QuickScanTileService extends TileService {
                     this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             startActivityAndCollapse(pendingIntent);
         } else {
-            launchQuickScan(intent);
+            startActivity(intent);
         }
-    }
-
-    @SuppressWarnings("deprecation")
-    private void launchQuickScan(Intent intent) {
-        startActivityAndCollapse(intent);
     }
 }

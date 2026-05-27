@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -55,6 +59,44 @@ func TestDNSTypeCodeUsesMiekgRegistry(t *testing.T) {
 	}
 	if got := dnsTypeCode("definitely-not-a-record"); got != 0 {
 		t.Fatalf("dnsTypeCode returned %d for unsupported type", got)
+	}
+}
+
+func TestDNSNormalizePreservesExplicitPositiveTimeout(t *testing.T) {
+	req := dnsScanRequest{TimeoutMS: 30000, Workers: 2048, Samples: 100}
+	req.normalize()
+	if req.TimeoutMS != 30000 {
+		t.Fatalf("TimeoutMS=%d, want explicit value preserved", req.TimeoutMS)
+	}
+	if req.Workers != 2048 || req.Samples != 100 {
+		t.Fatalf("explicit DNS worker/sample budget not preserved: %+v", req)
+	}
+}
+
+func TestScanDNSRejectsMalformedBodyWithSanitizedError(t *testing.T) {
+	body := bytes.NewBufferString(`{"domains":["example.com"],"resolvers":[`)
+	req := httptest.NewRequest(http.MethodPost, "/api/dns", body)
+	rec := httptest.NewRecorder()
+	scanDNS(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("dns status=%d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	got := rec.Body.String()
+	if !strings.Contains(got, "invalid dns scan request body") || strings.Contains(strings.ToLower(got), "unexpected") {
+		t.Fatalf("dns decode error was not sanitized: %q", got)
+	}
+}
+
+func TestScanDNSRejectsOverCapWorkloadRequest(t *testing.T) {
+	body := bytes.NewBufferString(`{"domains":["example.com"],"resolvers":["1.1.1.1"],"workers":999999}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/dns", body)
+	rec := httptest.NewRecorder()
+	scanDNS(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("dns status=%d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "dns request exceeds sidecar safety limits") {
+		t.Fatalf("unexpected error body: %q", rec.Body.String())
 	}
 }
 

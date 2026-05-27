@@ -50,20 +50,52 @@ type dnsJob struct {
 	qtype    string
 }
 
+const (
+	maxDNSRequestTimeoutMS  = 120000
+	maxDNSRequestWorkers    = 8192
+	maxDNSRequestSamples    = 1024
+	maxDNSRequestRatePerSec = 200000
+	maxDNSRequestJitterMS   = 60000
+)
+
 func scanDNS(w http.ResponseWriter, r *http.Request) {
+	var serial uint64
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+	if activeControlPlane != nil {
+		activeControlPlane.setState("dns_running")
+		defer activeControlPlane.setState("idle")
+	}
 	var req dnsScanRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writePublicBadRequest(w, "invalid dns scan request body")
+		return
+	}
+	if err := req.validateCaps(); err != nil {
+		writePublicBadRequest(w, "dns request exceeds sidecar safety limits")
 		return
 	}
 	metricDNSRuns.Add(1)
 	req.normalize()
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	activeCancelMu.Lock()
+	if activeCancel != nil {
+		activeCancel()
+	}
+	activeSerial++
+	serial = activeSerial
+	activeCancel = cancel
+	activeCancelMu.Unlock()
+	defer func() {
+		activeCancelMu.Lock()
+		if activeSerial == serial {
+			activeCancel = nil
+		}
+		activeCancelMu.Unlock()
+	}()
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	flusher, _ := w.(http.Flusher)
@@ -155,13 +187,13 @@ func (r *dnsScanRequest) normalize() {
 		}
 	}
 	r.QTypes = unique(qtypes)
-	if r.TimeoutMS < 200 || r.TimeoutMS > 10000 {
+	if r.TimeoutMS <= 0 {
 		r.TimeoutMS = 1500
 	}
-	if r.Workers <= 0 || r.Workers > 512 {
+	if r.Workers <= 0 {
 		r.Workers = max(4, runtime.NumCPU()*2)
 	}
-	if r.Samples <= 0 || r.Samples > 20 {
+	if r.Samples <= 0 {
 		r.Samples = 1
 	}
 	if r.RatePerSecond < 0 {
@@ -170,6 +202,25 @@ func (r *dnsScanRequest) normalize() {
 	if r.JitterMS < 0 {
 		r.JitterMS = 0
 	}
+}
+
+func (r dnsScanRequest) validateCaps() error {
+	if r.TimeoutMS > maxDNSRequestTimeoutMS {
+		return fmt.Errorf("timeout exceeds sidecar cap")
+	}
+	if r.Workers > maxDNSRequestWorkers {
+		return fmt.Errorf("workers exceeds sidecar cap")
+	}
+	if r.Samples > maxDNSRequestSamples {
+		return fmt.Errorf("samples exceeds sidecar cap")
+	}
+	if r.RatePerSecond > maxDNSRequestRatePerSec {
+		return fmt.Errorf("rate exceeds sidecar cap")
+	}
+	if r.JitterMS > maxDNSRequestJitterMS {
+		return fmt.Errorf("jitter exceeds sidecar cap")
+	}
+	return nil
 }
 
 func runDNSQuery(ctx context.Context, job dnsJob, timeoutMS int) dnsResult {

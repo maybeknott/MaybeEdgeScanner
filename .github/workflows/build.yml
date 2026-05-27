@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -15,16 +16,31 @@ env:
 jobs:
   go-sidecar:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: go-sidecar
     steps:
       - uses: actions/checkout@v6
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Validate shared contracts (if available)
+        run: |
+          if [ -f shared-contracts/validate_contracts.py ]; then
+            python3 shared-contracts/validate_contracts.py
+          elif [ -f ../shared-contracts/validate_contracts.py ]; then
+            python3 ../shared-contracts/validate_contracts.py
+          else
+            echo "shared-contracts validator not present in this repository checkout"
+          fi
       - uses: actions/setup-go@v6
         with:
           go-version-file: go-sidecar/go.mod
           cache-dependency-path: go-sidecar/go.sum
+      - name: Run release compliance checks
+        run: |
+          chmod +x .github/scripts/release_compliance_check.sh
+          ./.github/scripts/release_compliance_check.sh
       - name: Download Go dependencies
+        working-directory: go-sidecar
         run: |
           go mod tidy
           go mod download
@@ -46,12 +62,22 @@ jobs:
             go-sidecar/go.mod
             go-sidecar/go.sum
       - name: Test Go sidecar
+        working-directory: go-sidecar
         run: go test ./...
+      - name: Vet Go sidecar
+        working-directory: go-sidecar
+        run: go vet ./...
+      - name: Race-test Go sidecar
+        working-directory: go-sidecar
+        run: go test -race ./...
       - name: Build Linux sidecar
+        working-directory: go-sidecar
         run: go build -trimpath -ldflags="-s -w" -o maybeedgescanner-sidecar-linux-amd64 .
       - name: Build Windows sidecar
+        working-directory: go-sidecar
         run: GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o maybeedgescanner-sidecar-windows-amd64.exe .
       - name: Build macOS sidecar
+        working-directory: go-sidecar
         run: GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o maybeedgescanner-sidecar-darwin-amd64 .
       - name: Upload sidecar artifacts
         uses: actions/upload-artifact@v7
@@ -108,6 +134,10 @@ jobs:
           } > signing.properties
       - name: Download Gradle dependencies
         run: gradle --no-daemon --refresh-dependencies :app:dependencies
+      - name: Lint Android app
+        run: gradle --no-daemon :app:lintUniversalDebug
+      - name: Run Android unit tests
+        run: gradle --no-daemon :app:testUniversalDebugUnitTest
       - name: Build debug APK
         if: github.event_name == 'pull_request'
         run: gradle --no-daemon :app:assembleDebug
@@ -134,12 +164,34 @@ jobs:
           name: maybeedgescanner-apks
           path: app/build/outputs/apk/**/release/*.apk
 
+  benchmarks:
+    name: Sidecar benchmarks
+    runs-on: ubuntu-latest
+    needs: go-sidecar
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go-sidecar/go.mod
+          cache-dependency-path: go-sidecar/go.sum
+      - name: Run Go benchmark suite
+        working-directory: go-sidecar
+        run: |
+          mkdir -p ../dist/benchmarks
+          go test -bench . -benchmem ./... | tee ../dist/benchmarks/maybeedgescanner-go-bench.txt
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: maybeedgescanner-benchmarks
+          path: dist/benchmarks/*.txt
+
   dependency-container:
     name: Publish dependency container
     runs-on: ubuntu-latest
     needs:
       - go-sidecar
       - android
+      - benchmarks
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
@@ -201,8 +253,8 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           annotations: |
             org.opencontainers.image.description=Android Gradle and Go module dependencies warmed for MaybeEdgeScanner CI builds
-          provenance: false
-          sbom: false
+          provenance: true
+          sbom: true
           cache-from: |
             type=gha,scope=maybeedgescanner-deps
             type=registry,ref=${{ steps.image.outputs.name }}:buildcache
@@ -227,10 +279,21 @@ jobs:
     needs:
       - go-sidecar
       - android
+      - benchmarks
       - dependency-container
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go-sidecar/go.mod
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.14.2"
       - name: Download APK artifacts
         uses: actions/download-artifact@v7
         with:
@@ -241,6 +304,21 @@ jobs:
         with:
           name: maybeedgescanner-sidecars
           path: dist/sidecars
+      - name: Download benchmark artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: maybeedgescanner-benchmarks
+          path: dist/benchmarks
+      - name: Build source archive and compliance inventories
+        run: |
+          mkdir -p dist/source dist/compliance/licenses
+          git archive --format=tar.gz --output="dist/source/MaybeEdgeScanner-source-${GITHUB_SHA}.tar.gz" "$GITHUB_SHA"
+          git archive --format=zip --output="dist/source/MaybeEdgeScanner-source-${GITHUB_SHA}.zip" "$GITHUB_SHA"
+          (
+            cd go-sidecar
+            go list -m all
+          ) > dist/compliance/licenses/go-modules.txt
+          gradle --no-daemon :app:dependencies > dist/compliance/licenses/android-dependencies.txt
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -250,8 +328,14 @@ jobs:
             echo "No release assets found under dist" >&2
             exit 1
           fi
-          APP_VERSION="${ANDROID_VERSION_NAME:-1.0.0}"
-          APP_VERSION_CODE="${ANDROID_VERSION_CODE:-$((20260519 + GITHUB_RUN_NUMBER))}"
+          APP_VERSION_DEFAULT="$(awk -F= '/^APP_VERSION_NAME=/{print $2}' gradle.properties | tail -n1 | tr -d '\r')"
+          BASE_VERSION_CODE="$(awk -F= '/^APP_BASE_VERSION_CODE=/{print $2}' gradle.properties | tail -n1 | tr -d '\r')"
+          if [ -z "$APP_VERSION_DEFAULT" ] || [ -z "$BASE_VERSION_CODE" ]; then
+            echo "Missing APP_VERSION_NAME or APP_BASE_VERSION_CODE in gradle.properties" >&2
+            exit 1
+          fi
+          APP_VERSION="${ANDROID_VERSION_NAME:-$APP_VERSION_DEFAULT}"
+          APP_VERSION_CODE="${ANDROID_VERSION_CODE:-$((BASE_VERSION_CODE + GITHUB_RUN_NUMBER))}"
           SHORT_SHA="${GITHUB_SHA::7}"
           TIMESTAMP_STAMP="$(date +'%Y%m%d%H%M%S')"
           TAG_NAME="v${APP_VERSION}-${APP_VERSION_CODE}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}-${TIMESTAMP_STAMP}"

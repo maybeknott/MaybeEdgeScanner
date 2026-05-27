@@ -1,9 +1,13 @@
 package com.maybeedgescanner;
 
+import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
@@ -23,6 +27,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.text.Layout;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -45,6 +50,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
@@ -55,17 +61,20 @@ import com.maybeedgescanner.diagnostics.PrivilegedTelephonyBasebandManager;
 
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.DiffUtil;
 import android.view.ViewGroup;
 import android.transition.TransitionManager;
 
 public class MainActivity extends Activity {
     public static final String ACTION_QUICK_SCAN = "com.maybeedgescanner.action.QUICK_SCAN";
+    public static final String ACTION_SERVICE_STOP_SCAN = "com.maybeedgescanner.action.SERVICE_STOP_SCAN";
     private static final int BLUE = Color.rgb(23, 192, 235);
     private static final int PANEL = Color.rgb(13, 28, 39);
     private static final int FIELD = Color.rgb(9, 20, 29);
     private static final int MUTED = Color.rgb(140, 161, 178);
     private static final String SUPPORT_GITHUB = "https://github.com/maybeknott/MaybeEdgeScanner/";
     private static final int SHIZUKU_REQUEST_CODE = 4601;
+    private static final int NOTIFICATION_REQUEST_CODE = 4602;
     private static final String[] RADIO_MODE_KEYS = {
             "preferred_network_mode",
             "preferred_network_mode0",
@@ -73,17 +82,23 @@ public class MainActivity extends Activity {
             "preferred_network_mode2"
     };
     private static final int PREVIEW_TARGET_LIMIT = 12;
-    private static final int MAX_RENDERED_CARDS = 250;
-    private static final int MAX_THREADS = 128;
-    private static final int MAX_BATCH = 20000;
+    private static final int RESULT_QUEUE_CAPACITY = 8192;
+    private static final int RESULT_DRAIN_BATCH = 512;
+    private static final int PREVIEW_CHIP_LIMIT = 12;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final AtomicBoolean stop = new AtomicBoolean(false);
     private final AtomicBoolean renderQueued = new AtomicBoolean(false);
+    private final AtomicBoolean resultDrainQueued = new AtomicBoolean(false);
+    private final AtomicBoolean progressQueued = new AtomicBoolean(false);
     private final AtomicBoolean shizukuCommandRunning = new AtomicBoolean(false);
     private PrivilegedTelephonyBasebandManager basebandManager;
     private final AtomicInteger checkedTargets = new AtomicInteger(0);
-    private final List<Result> allResults = new CopyOnWriteArrayList<>();
+    private final AtomicLong resultSequence = new AtomicLong(0);
+    private final AtomicLong scanGeneration = new AtomicLong(0);
+    private final AtomicLong shizukuActionSequence = new AtomicLong(0);
+    private final ResultSessionStore<Result> resultStore = new ResultSessionStore<>();
+    private final BlockingQueue<ResultEvent> pendingResults = new ArrayBlockingQueue<>(RESULT_QUEUE_CAPACITY);
     private final ConcurrentHashMap<String, List<String>> assetLineCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, LinkedHashSet<String>> assetTokenCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, LinkedHashSet<String>> communityCorpusCache = new ConcurrentHashMap<>();
@@ -98,6 +113,10 @@ public class MainActivity extends Activity {
     private String cachedResourceLine = "battery n/a | heap 0MB";
     private long cachedResourceLineAt;
     private long stableHistoryRenderedAt;
+    private long analyticsRenderedAt;
+    private long heatmapRenderedAt;
+    private long logRenderedAt;
+    private String lastRenderedLogText = "";
     private long lastShizukuProbeAt;
     private float swipeDownX, swipeDownY;
 
@@ -106,6 +125,11 @@ public class MainActivity extends Activity {
     private LinearLayout resultSummaryContainer;
     private LinearLayout heatmapContainer;
     private LinearLayout pagerContainer;
+    private TextView resultSummaryText;
+    private LinearLayout pagerPanel;
+    private TextView pagerText;
+    private Button pagerPrevButton;
+    private Button pagerNextButton;
     private LinearLayout targetTab, liveTab, diagnosticsTab;
     private LinearLayout targetChipPreview, sniChipPreview;
     private LinearLayout analyticsPanel;
@@ -124,9 +148,16 @@ public class MainActivity extends Activity {
     private TextView diagnosticOutputView;
     private Button runDiagnosticsButton;
     private CheckBox multiSni, filterWorking, filterTlsHttp, bestPerIp, hideNoisyLogs, requireHttp, requireKnownCdn, requireTls13, batteryFriendlyUi;
+    private CheckBox diagnosticsOfflineMode, diagnosticsIncludePublicIp, exportPrivacyMode;
     private CheckBox communitySourceEnabled, akamaiSourceEnabled, cloudfrontSourceEnabled, fastlySourceEnabled, cloudflareSourceEnabled, otherCdnSourceEnabled, defaultSniEnabled;
     private CheckBox stepTcp, stepTls, stepHttp, stepVerify;
-    private Spinner profileSpinner, workflowSpinner, sortSpinner, exportSpinner, tlsModeSpinner, cdnProviderSpinner;
+    private Spinner profileSpinner, workflowSpinner, sortSpinner, exportSpinner, fileExportSpinner, tlsModeSpinner, cdnProviderSpinner;
+    private Spinner routeProviderSpinner, routeProtocolSpinner, routeAuthSpinner, routeDnsSpinner, routeSplitSpinner, routeUpstreamSpinner, routeDownstreamSpinner, routeGatewaySpinner;
+    private Spinner routeStrategySpinner, routeConduitModeSpinner, routeProviderChainSpinner;
+    private EditText routeProfileRefInput, routeCredentialRefInput, routeConfigRefInput, routeEndpointInput, routePackageInput;
+    private EditText routeFrontingIpRefInput, routeFrontingSniInput, routeChainUpstreamRefInput, routeGatewayAuthRefInput, routeLanSocksPortInput, routeLanHttpPortInput;
+    private CheckBox routeShareLanCheck, routeBeastModeCheck;
+    private TextView routeReadinessView;
     private Button startButton, stopButton, copyButton, copyCsvButton, exportButton, clearButton, helpButton;
     private Button tabTargetButton, tabLiveButton, tabDiagnosticsButton;
     private int totalTargets;
@@ -140,6 +171,20 @@ public class MainActivity extends Activity {
     private final Shizuku.OnRequestPermissionResultListener shizukuPermissionListener = this::onShizukuPermissionResult;
     private final Shizuku.OnBinderReceivedListener shizukuBinderReceivedListener = this::onShizukuBinderReceived;
     private final Shizuku.OnBinderDeadListener shizukuBinderDeadListener = this::onShizukuBinderDead;
+    private final BroadcastReceiver scanControlReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (intent == null) return;
+            String action = intent.getAction();
+            if (ACTION_SERVICE_STOP_SCAN.equals(action)) {
+                requestStop();
+            } else if (ScanForegroundService.ACTION_STATE_CHANGED.equals(action)) {
+                ScanForegroundService.ScanLifecycleSnapshot snapshot = ScanForegroundService.snapshot();
+                if (status != null && !"idle".equals(snapshot.state)) {
+                    status.setText(snapshot.state + ": " + snapshot.detail);
+                }
+            }
+        }
+    };
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -147,9 +192,11 @@ public class MainActivity extends Activity {
         loadDefaults();
         maybeShowOnboarding();
         addShizukuListener();
+        registerScanControlReceiver();
+        ensureScanNotificationPermission();
         refreshShizukuState();
         if (ACTION_QUICK_SCAN.equals(getIntent().getAction())) {
-            ui.postDelayed(this::startScan, 450);
+            ui.postDelayed(this::handleQuickScanIntent, 450);
         }
     }
 
@@ -162,6 +209,10 @@ public class MainActivity extends Activity {
             previewExecutor.shutdownNow();
         }
         removeShizukuListener();
+        try {
+            unregisterReceiver(scanControlReceiver);
+        } catch (IllegalArgumentException ignored) {
+        }
         super.onDestroy();
     }
 
@@ -169,43 +220,52 @@ public class MainActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         if (ACTION_QUICK_SCAN.equals(intent.getAction())) {
-            ui.postDelayed(this::startScan, 450);
+            ui.postDelayed(this::handleQuickScanIntent, 450);
         }
     }
 
     @Override protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
-        synchronized (allResults) {
-            outState.putSerializable("results", new ArrayList<>(allResults));
-        }
+        outState.putString("result_session_id", resultStore.sessionId());
+        outState.putInt("result_count", resultStore.size());
         synchronized (logLines) {
-            outState.putStringArrayList("logs", new ArrayList<>(logLines));
+            outState.putInt("log_count", logLines.size());
         }
     }
 
     @Override protected void onRestoreInstanceState(Bundle savedInstanceState) {
         super.onRestoreInstanceState(savedInstanceState);
         if (savedInstanceState == null) return;
-        Object restored = savedInstanceState.getSerializable("results");
-        if (restored instanceof ArrayList<?>) {
-            synchronized (allResults) {
-                allResults.clear();
-                for (Object item : (ArrayList<?>) restored) {
-                    if (item instanceof Result) allResults.add((Result) item);
-                }
-            }
-        }
-        ArrayList<String> logs = savedInstanceState.getStringArrayList("logs");
-        if (logs != null) {
-            synchronized (logLines) {
-                logLines.clear();
-                logLines.addAll(logs);
-                rebuildStableLogBuilder();
-            }
-            if (logView != null) logView.setText(stableLogBuilder.toString().trim());
-        }
+        // Full scan rows/logs intentionally stay out of Activity bundles. A later
+        // foreground-service session store will provide process-death recovery.
         updateProgress();
         scheduleRender();
+    }
+
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private void registerScanControlReceiver() {
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ACTION_SERVICE_STOP_SCAN);
+        filter.addAction(ScanForegroundService.ACTION_STATE_CHANGED);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(scanControlReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(scanControlReceiver, filter);
+        }
+    }
+
+    private void handleQuickScanIntent() {
+        selectTab(0);
+        Toast.makeText(this, "Quick scan preset loaded. Review the plan, then press Start.", Toast.LENGTH_LONG).show();
+        updateScanPlanPreview();
+        ScanForegroundService.update(this, "waiting_for_confirmation",
+                "Quick scan request opened for review", 0);
+    }
+
+    private void ensureScanNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return;
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return;
+        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_REQUEST_CODE);
     }
 
     private void buildUi() {
@@ -406,7 +466,7 @@ public class MainActivity extends Activity {
         targetTab.addView(collapsibleBox("Workflow and probe stages", workflowPanel, true));
 
         LinearLayout performancePanel = column();
-        performancePanel.addView(quietNote("Performance modes tune threads, batch, and timeout. Raise Total cap for full subnet or full-provider runs."));
+        performancePanel.addView(quietNote("Performance modes tune threads, batch, and timeout. Raise Run budget for full subnet or full-provider runs."));
         LinearLayout modeRow = row();
         modeRow.addView(modeButton("Battery Saver", "12 / 500 / 2500", 12, 500, 2500), weight());
         modeRow.addView(modeButton("Balanced", "32 / 2000 / 3000", 32, 2000, 3000), weight());
@@ -418,7 +478,7 @@ public class MainActivity extends Activity {
         batchInput = input("2000", true);
         threadsInput = input("32", true);
         timeoutInput = input("3000", true);
-        row2.addView(box("Total cap", totalInput), weight());
+        row2.addView(box("Run budget", totalInput), weight());
         row2.addView(box("Batch", batchInput), weight());
         performancePanel.addView(row2);
         LinearLayout row3 = row();
@@ -471,6 +531,83 @@ public class MainActivity extends Activity {
         requestPanel.addView(checks2);
         targetTab.addView(collapsibleBox("Request and display behavior", requestPanel, false));
 
+        LinearLayout routePanel = column();
+        routePanel.addView(quietNote("Edge routing profiles attach provider route identity to scans without storing raw provider credentials in the sidecar. Windscribe login/session ownership stays Android-side; Psiphon uses config/profile references and readiness observation."));
+        routeProviderSpinner = spinner(new String[]{"Direct / no provider route", "Windscribe", "Psiphon", "Generic local proxy"});
+        routeProtocolSpinner = spinner(new String[]{"external_vpn", "local_proxy", "wireguard", "openvpn_udp", "openvpn_tcp", "tcp", "stealth", "wstunnel", "ikev2", "tunnel_core_supervised", "external_vpn_apk"});
+        routeAuthSpinner = spinner(new String[]{"none", "external_app", "profile_ref", "credential_ref", "auth_token_ref", "sso_external", "wsnet_session_ref", "config_ref"});
+        routeDnsSpinner = spinner(new String[]{"system_or_route_default", "remote_dns", "route_dns", "ctrld", "control_d", "robert", "doh", "dot", "custom_dns_ref", "no_dns"});
+        routeSplitSpinner = spinner(new String[]{"scanner_app_only", "include_targets", "exclude_targets", "external_vpn_policy", "disabled"});
+        routeUpstreamSpinner = spinner(new String[]{"none", "system_proxy", "proxy_ref", "direct", "provider_default"});
+        routeDownstreamSpinner = spinner(new String[]{"scanner_to_route", "local_proxy_gateway", "vpn_interface", "provider_default"});
+        routeGatewaySpinner = spinner(new String[]{"loopback_only", "lan_shared"});
+        routeStrategySpinner = spinner(new String[]{"provider_default", "auto", "conduit_first", "conduit", "cdn_fronting", "direct", "profile_default"});
+        routeConduitModeSpinner = spinner(new String[]{"auto", "shirokhorshid", "public"});
+        routeProviderChainSpinner = spinner(new String[]{"none", "psiphon_over_windscribe", "windscribe_over_psiphon", "generic_proxy_over_windscribe", "windscribe_over_generic_proxy"});
+        routeProfileRefInput = input("", false); routeProfileRefInput.setHint("ref:windscribe-profile or ref:user-connected-vpn");
+        routeCredentialRefInput = input("", false); routeCredentialRefInput.setHint("ref:stored-session/auth-token only");
+        routeConfigRefInput = input("", false); routeConfigRefInput.setHint("ref:psiphon-config");
+        routeEndpointInput = input("", false); routeEndpointInput.setHint("socks5://127.0.0.1:1080 or http://127.0.0.1:8080");
+        routePackageInput = input("", false); routePackageInput.setHint("com.psiphon3 for external APK observation");
+        routeFrontingIpRefInput = input("", false); routeFrontingIpRefInput.setHint("ref:fronting-ip-list");
+        routeFrontingSniInput = input("", false); routeFrontingSniInput.setHint("front.example.com");
+        routeChainUpstreamRefInput = input("", false); routeChainUpstreamRefInput.setHint("ref:upstream-route");
+        routeGatewayAuthRefInput = input("", false); routeGatewayAuthRefInput.setHint("ref:lan-gateway-auth");
+        routeLanSocksPortInput = input("", true); routeLanSocksPortInput.setHint("optional");
+        routeLanHttpPortInput = input("", true); routeLanHttpPortInput.setHint("optional");
+        routeShareLanCheck = check("Share route gateway on LAN");
+        routeBeastModeCheck = check("Beast establishment");
+        LinearLayout routeRow1 = row();
+        routeRow1.addView(box("Provider", routeProviderSpinner), weight());
+        routeRow1.addView(box("Protocol", routeProtocolSpinner), weight());
+        routePanel.addView(routeRow1);
+        LinearLayout routeRow2 = row();
+        routeRow2.addView(box("Auth", routeAuthSpinner), weight());
+        routeRow2.addView(box("DNS policy", routeDnsSpinner), weight());
+        routePanel.addView(routeRow2);
+        LinearLayout routeRow3 = row();
+        routeRow3.addView(box("Split tunnel", routeSplitSpinner), weight());
+        routeRow3.addView(box("Downstream", routeDownstreamSpinner), weight());
+        routePanel.addView(routeRow3);
+        LinearLayout routeRow4 = row();
+        routeRow4.addView(box("Upstream", routeUpstreamSpinner), weight());
+        routeRow4.addView(box("Gateway", routeGatewaySpinner), weight());
+        routePanel.addView(routeRow4);
+        LinearLayout routeRow5 = row();
+        routeRow5.addView(box("Strategy", routeStrategySpinner), weight());
+        routeRow5.addView(box("Conduit", routeConduitModeSpinner), weight());
+        routePanel.addView(routeRow5);
+        routePanel.addView(box("Provider chain", routeProviderChainSpinner));
+        routePanel.addView(box("Profile ref", routeProfileRefInput));
+        routePanel.addView(box("Credential/session ref", routeCredentialRefInput));
+        routePanel.addView(box("Config ref", routeConfigRefInput));
+        routePanel.addView(box("Local proxy endpoint", routeEndpointInput));
+        routePanel.addView(box("External package", routePackageInput));
+        routePanel.addView(box("CDN/fronting IP ref", routeFrontingIpRefInput));
+        routePanel.addView(box("CDN/fronting SNI", routeFrontingSniInput));
+        routePanel.addView(box("Chain upstream route ref", routeChainUpstreamRefInput));
+        routePanel.addView(box("LAN gateway auth ref", routeGatewayAuthRefInput));
+        LinearLayout lanPorts = row();
+        lanPorts.addView(box("LAN SOCKS port", routeLanSocksPortInput), weight());
+        lanPorts.addView(box("LAN HTTP port", routeLanHttpPortInput), weight());
+        routePanel.addView(lanPorts);
+        LinearLayout routeFlags = row();
+        routeFlags.addView(routeShareLanCheck, weight());
+        routeFlags.addView(routeBeastModeCheck, weight());
+        routePanel.addView(routeFlags);
+        LinearLayout routeActions = row();
+        Button routeDefaults = button("Route defaults", Color.rgb(24, 45, 58), Color.WHITE);
+        Button routeObserve = button("Observe route", Color.rgb(24, 45, 58), Color.WHITE);
+        routeDefaults.setOnClickListener(v -> applyRouteProviderDefaults());
+        routeObserve.setOnClickListener(v -> updateRouteReadinessPreview());
+        routeActions.addView(routeDefaults, weight());
+        routeActions.addView(routeObserve, weight());
+        routePanel.addView(routeActions);
+        routeReadinessView = panelText("Route readiness: direct scan path");
+        formatMonospace(routeReadinessView, 11);
+        routePanel.addView(routeReadinessView);
+        targetTab.addView(collapsibleBox("Edge routing profile", routePanel, false));
+
         // Populate Results Tab
         liveAnchor = section("Results");
         liveTab.addView(liveAnchor);
@@ -488,7 +625,7 @@ public class MainActivity extends Activity {
         liveTab.addView(analyticsPanel);
 
         LinearLayout filterPanel = column();
-        filterPanel.addView(quietNote("These controls only change visible cards and exports; they never change the scan queue."));
+        filterPanel.addView(quietNote("These controls only change visible rows and exports; they never change the scan queue."));
         LinearLayout resultFilterToggles1 = row();
         resultFilterToggles1.addView(filterWorking, weight());
         resultFilterToggles1.addView(filterTlsHttp, weight());
@@ -508,9 +645,9 @@ public class MainActivity extends Activity {
         filterPanel.addView(providerFilterRow);
         LinearLayout row5 = row();
         maxLatencyInput = input("", true); maxLatencyInput.setHint("Any");
-        resultLimitInput = input("250", true);
+        resultLimitInput = input("1000", true);
         row5.addView(box("Max latency ms", maxLatencyInput), weight());
-        row5.addView(box("Visible cards", resultLimitInput), weight());
+        row5.addView(box("Visible rows", resultLimitInput), weight());
         filterPanel.addView(row5);
         LinearLayout row6 = row();
         cdnFilterInput = input("", false); cdnFilterInput.setHint("Any CDN");
@@ -555,11 +692,11 @@ public class MainActivity extends Activity {
         liveTab.addView(collapsibleBox("Filter, sort, and page cards", filterPanel, true));
 
         LinearLayout exportPanel = column();
-        exportPanel.addView(quietNote("Copy and save use the current filtered result set. Cards stay visible after export."));
+        exportPanel.addView(quietNote("Clipboard uses filtered cards. File export streams full session results with schema + redaction metadata."));
         LinearLayout buttons = row();
         copyButton = button("Copy format", Color.rgb(34, 51, 66), Color.WHITE);
         copyCsvButton = button("Copy CSV", Color.rgb(34, 51, 66), Color.WHITE);
-        exportButton = button("Save JSON", Color.rgb(34, 51, 66), Color.WHITE);
+        exportButton = button("Save Export", Color.rgb(34, 51, 66), Color.WHITE);
         buttons.addView(copyButton, weight());
         buttons.addView(copyCsvButton, weight());
         buttons.addView(exportButton, weight());
@@ -568,6 +705,11 @@ public class MainActivity extends Activity {
         exportSpinner = spinner(new String[]{"Line-separated IPs", "Comma-separated IPs", "IP SNI pairs", "SNI only", "CSV rows", "JSON"});
         exportRow.addView(box("Clipboard format", exportSpinner), weight());
         exportPanel.addView(exportRow);
+        fileExportSpinner = spinner(new String[]{"JSONL session export", "CSV session export", "Markdown report", "Nmap-like XML"});
+        exportPanel.addView(box("File export format", fileExportSpinner));
+        exportPrivacyMode = check("Privacy redaction for exports");
+        exportPrivacyMode.setChecked(true);
+        exportPanel.addView(exportPrivacyMode);
         liveTab.addView(collapsibleBox("Copy and export", exportPanel, false));
         liveTab.addView(segmentedChoice("Visualization", new String[]{"Cards", "Heatmap"}, visualizationButtons, visualizationMode, index -> {
             visualizationMode = index;
@@ -621,6 +763,12 @@ public class MainActivity extends Activity {
         runDiagnosticsButton = button("Run Diagnostics", Color.rgb(24, 45, 58), Color.WHITE);
         runDiagnosticsButton.setOnClickListener(v -> runNetworkDiagnostics());
         diagCard.addView(runDiagnosticsButton);
+        diagnosticsOfflineMode = check("Offline diagnostics mode (no external probes)");
+        diagnosticsOfflineMode.setChecked(false);
+        diagCard.addView(diagnosticsOfflineMode);
+        diagnosticsIncludePublicIp = check("Include public IP probe (api.ipify.org)");
+        diagnosticsIncludePublicIp.setChecked(false);
+        diagCard.addView(diagnosticsIncludePublicIp);
 
         diagnosticOutputView = panelText("Ready to run network diagnostics.");
         formatMonospace(diagnosticOutputView, 11);
@@ -648,6 +796,14 @@ public class MainActivity extends Activity {
         stopButton.setOnClickListener(v -> requestStop());
         clearButton.setOnClickListener(v -> clearResults());
         helpButton.setOnClickListener(v -> showGuide());
+        routeProviderSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                applyRouteProviderDefaults();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {
+                updateRouteReadinessPreview();
+            }
+        });
         tabTargetButton.setOnClickListener(v -> selectTab(0));
         tabLiveButton.setOnClickListener(v -> selectTab(1));
         tabDiagnosticsButton.setOnClickListener(v -> selectTab(2));
@@ -973,7 +1129,6 @@ public class MainActivity extends Activity {
     private void applyBatteryFriendlyUi() {
         boolean on = batteryFriendlyUi != null && batteryFriendlyUi.isChecked();
         if (hideNoisyLogs != null) hideNoisyLogs.setChecked(on || hideNoisyLogs.isChecked());
-        if (resultLimitInput != null && on) resultLimitInput.setText("75");
         if (on) {
             densityMode = 2;
             refreshSegmentButtons(densityButtons, densityMode);
@@ -1035,9 +1190,9 @@ public class MainActivity extends Activity {
         final boolean otherCdn = checked(otherCdnSourceEnabled);
         final int otherCdnCount = intValue(otherCdnSampleInput, 0);
         
-        final int threads = clampInt(intValue(threadsInput, 32), 1, MAX_THREADS);
-        final int batch = clampInt(intValue(batchInput, 2000), 1, MAX_BATCH);
-        final int timeout = clampInt(intValue(timeoutInput, 3000), 250, 15000);
+        final int threads = Math.max(1, intValue(threadsInput, 32));
+        final int batch = Math.max(1, intValue(batchInput, 2000));
+        final int timeout = Math.max(1, intValue(timeoutInput, 3000));
         final String pathText = pathInput == null ? "/" : pathInput.getText().toString();
         final String tlsMode = tlsModeSpinner == null ? "Android default" : String.valueOf(tlsModeSpinner.getSelectedItem());
         final List<Integer> profiles = selectedWorkflowProfiles();
@@ -1048,7 +1203,7 @@ public class MainActivity extends Activity {
             rebuildManagedSourcesBg(defaultSni, community, communityCount, akamai, akamaiCount, cloudfront, cloudfrontCount, fastly, fastlyCount, cloudflare, cloudflareCount, otherCdn, otherCdnCount);
             
             final List<String> targetTokens = combinedTargetTokens(rawTargetsText);
-            final int estimatedTargets = estimateExpandedTargetCount(targetTokens, 200000);
+            final int estimatedTargets = estimateExpandedTargetCount(targetTokens, Integer.MAX_VALUE);
             final List<String> previewTargets = previewExpandedTargets(targetTokens, Math.min(targetCap, PREVIEW_TARGET_LIMIT));
             
             final boolean sniPairing = sniPairingEnabled();
@@ -1089,7 +1244,6 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void updateSourceHealth(List<String> targetTokens, int estimatedTargets, int targetCap) {}
 
     private String sourceLoadPosture(int estimatedTargets, int targetCap) {
         return sourceLoadPostureBg(estimatedTargets, targetCap, 32, 2000);
@@ -1167,29 +1321,79 @@ public class MainActivity extends Activity {
     }
 
     private void renderChips(LinearLayout panel, String title, List<String> values, boolean targets) {
-        panel.removeAllViews();
+        PreviewPanelState state = previewPanelState(panel);
         int valid = 0;
         for (String value : values) if (targets ? validTargetToken(value) : validDomainToken(value)) valid++;
-        panel.addView(text(title + ": " + valid + "/" + values.size() + " ready", 11, MUTED, true));
-        int shown = Math.min(values.size(), 12);
-        LinearLayout row = null;
+        state.title.setText(title + ": " + valid + "/" + values.size() + " ready");
+        int shown = Math.min(values.size(), PREVIEW_CHIP_LIMIT);
         for (int i = 0; i < shown; i++) {
+            String token = values.get(i);
+            boolean ok = targets ? validTargetToken(token) : validDomainToken(token);
+            bindPreviewChip(state.chips.get(i), token, ok);
+            state.chips.get(i).setVisibility(View.VISIBLE);
+        }
+        for (int i = shown; i < state.chips.size(); i++) {
+            state.chips.get(i).setVisibility(View.GONE);
+        }
+        if (values.size() > shown) {
+            bindPreviewChip(state.overflowChip, "+" + (values.size() - shown) + " more", true);
+            state.overflowChip.setVisibility(View.VISIBLE);
+        } else {
+            state.overflowChip.setVisibility(View.GONE);
+        }
+        if (values.isEmpty()) {
+            bindPreviewChip(state.emptyChip, targets ? "Paste IPs, CIDRs, ranges, domains" : "Paste hostnames for TLS SNI", true);
+            state.emptyChip.setVisibility(View.VISIBLE);
+        } else {
+            state.emptyChip.setVisibility(View.GONE);
+        }
+    }
+
+    private PreviewPanelState previewPanelState(LinearLayout panel) {
+        Object tag = panel.getTag();
+        if (tag instanceof PreviewPanelState) return (PreviewPanelState) tag;
+        panel.removeAllViews();
+        PreviewPanelState state = new PreviewPanelState();
+        state.title = text("", 11, MUTED, true);
+        panel.addView(state.title);
+        LinearLayout row = null;
+        for (int i = 0; i < PREVIEW_CHIP_LIMIT; i++) {
             if (i % 2 == 0) {
                 row = row();
                 row.setGravity(Gravity.START);
                 panel.addView(row);
             }
-            String token = values.get(i);
-            boolean ok = targets ? validTargetToken(token) : validDomainToken(token);
-            row.addView(chip(token, ok), smallChipLp());
+            TextView chip = chip("", true);
+            chip.setVisibility(View.GONE);
+            state.chips.add(chip);
+            row.addView(chip, smallChipLp());
         }
-        if (row == null) {
-            row = row();
-            row.setGravity(Gravity.START);
-            panel.addView(row);
-        }
-        if (values.size() > shown) row.addView(chip("+" + (values.size() - shown) + " more", true), smallChipLp());
-        if (values.isEmpty()) row.addView(chip(targets ? "Paste IPs, CIDRs, ranges, domains" : "Paste hostnames for TLS SNI", true), smallChipLp());
+        LinearLayout metaRow = row();
+        metaRow.setGravity(Gravity.START);
+        state.overflowChip = chip("", true);
+        state.emptyChip = chip("", true);
+        state.overflowChip.setVisibility(View.GONE);
+        state.emptyChip.setVisibility(View.GONE);
+        metaRow.addView(state.overflowChip, smallChipLp());
+        metaRow.addView(state.emptyChip, smallChipLp());
+        panel.addView(metaRow);
+        panel.setTag(state);
+        return state;
+    }
+
+    private void bindPreviewChip(TextView v, String label, boolean ok) {
+        v.setText(trim(label, 22));
+        int fill = ok ? Color.rgb(11, 58, 46) : Color.rgb(74, 26, 37);
+        int stroke = ok ? Color.argb(150, 66, 230, 170) : Color.argb(170, 255, 120, 140);
+        v.setBackground(glassBg(fill, stroke));
+        v.setContentDescription((ok ? "Valid token " : "Invalid token ") + label);
+    }
+
+    private static class PreviewPanelState {
+        TextView title;
+        final ArrayList<TextView> chips = new ArrayList<>();
+        TextView overflowChip;
+        TextView emptyChip;
     }
 
     private TextView chip(String label, boolean ok) {
@@ -1264,6 +1468,14 @@ public class MainActivity extends Activity {
         ScrollView activeScroll = (activeTab == 0) ? targetScroll : (activeTab == 1 ? liveScroll : diagnosticsScroll);
         if (activeScroll != null) {
             activeScroll.post(() -> activeScroll.smoothScrollTo(0, 0));
+        }
+        if (activeTab == 1) {
+            analyticsRenderedAt = 0;
+            renderResults();
+        }
+        if (activeTab == 2) {
+            logRenderedAt = 0;
+            refreshLogView();
         }
     }
 
@@ -1349,9 +1561,9 @@ public class MainActivity extends Activity {
                         "Visual modes\n" +
                         "Comfort is the default card layout. Contrast avoids color-only status cues and increases card opacity. Compact reduces spacing so more edges fit on screen.\n\n" +
                         "Performance parameters\n" +
-                        "Total cap is the run limit after CIDR/range expansion; raise it when you intentionally want full subnets or very large provider corpora. Batch controls how many targets run per wave. Threads controls parallel sockets. Timeout ms controls how long each connect/TLS/HTTP attempt can wait.\n\n" +
+                        "Run budget is the requested execution budget after CIDR/range expansion; raise it when you intentionally want full subnets or very large provider corpora. Batch controls how many targets run per wave. Threads controls parallel sockets. Timeout ms controls how long each connect/TLS/HTTP attempt can wait.\n\n" +
                         "Filtering and sorting\n" +
-                        "Results owns all browsing controls: Working only, TLS/HTTP only, HTTP only, Known CDN only, TLS 1.3 only, provider filter, SNI filter, CDN text filter, certificate filter, max latency, visible card limit, and min score. Sort by Score to surface the strongest candidates.\n\n" +
+                        "Results owns all browsing controls: Working only, TLS/HTTP only, HTTP only, Known CDN only, TLS 1.3 only, provider filter, SNI filter, CDN text filter, certificate filter, max latency, visible row budget, and min score. Sort by Score to surface the strongest candidates.\n\n" +
                         "Copy and export\n" +
                         "Copy filtered uses exactly the rows currently visible after filters and sort. Choose line-separated IPs, comma-separated IPs, IP SNI pairs, SNI only, CSV, or JSON. Copy never replaces the card surface; it only reports status.")
                 .setPositiveButton("Got it", null)
@@ -1506,7 +1718,7 @@ public class MainActivity extends Activity {
         int estimated;
         int targetSize;
         synchronized (selectedSourceTargets) {
-            estimated = estimateExpandedTargetCount(new ArrayList<>(selectedSourceTargets), 200000);
+            estimated = estimateExpandedTargetCount(new ArrayList<>(selectedSourceTargets), Integer.MAX_VALUE);
             targetSize = selectedSourceTargets.size();
         }
 
@@ -1517,7 +1729,7 @@ public class MainActivity extends Activity {
 
         return "Managed sources\n" +
                 (enabled.isEmpty() ? "No target corpus enabled" : joinComma(enabled)) + "\n" +
-                targetSize + " target tokens -> about " + estimated + " expanded endpoints before Total cap.\n" +
+                targetSize + " target tokens -> about " + estimated + " expanded endpoints before Run budget.\n" +
                 sniSize + " default/provider SNI routes " + (defaultSni ? "enabled" : "disabled") + "; custom typed targets and SNIs are sampled separately.";
     }
 
@@ -1550,7 +1762,7 @@ public class MainActivity extends Activity {
 
         return "Source health\n" +
                 composition + "\n" +
-                "Expanded estimate: " + estimatedTargets + " endpoints; Total cap keeps " + cappedTargets + " for this run.\n" +
+                "Expanded estimate: " + estimatedTargets + " endpoints; Run budget requests " + cappedTargets + " for this run.\n" +
                 routeScope + "\n" +
                 sourceLoadPostureBg(estimatedTargets, targetCap, threads, batch);
     }
@@ -1567,7 +1779,7 @@ public class MainActivity extends Activity {
             String rawTargetsText, String rawSnisText,
             List<String> targetTokens, int targetCap, int batch, int threads, int timeout,
             String pathText, String tlsMode, List<Integer> profiles, boolean allSni, String portsText) {
-        int estimatedTargets = estimateExpandedTargetCount(targetTokens, 200000);
+        int estimatedTargets = estimateExpandedTargetCount(targetTokens, Integer.MAX_VALUE);
         int cappedTargets = Math.min(estimatedTargets, targetCap);
         int sniCount = sniPairingEnabled() ? Math.max(1, combinedSniTokens(rawSnisText).size()) : 1;
         List<Integer> ports = parsePorts(portsText);
@@ -1583,7 +1795,7 @@ public class MainActivity extends Activity {
         if (!path.startsWith("/")) path = "/" + path;
 
         return "Scan plan\n" +
-                managedTargets + " managed source tokens + " + lines(rawTargetsText).size() + " custom tokens -> " + estimatedTargets + " estimated endpoints -> " + cappedTargets + " after Total cap " + targetCap + "\n" +
+                managedTargets + " managed source tokens + " + lines(rawTargetsText).size() + " custom tokens -> " + estimatedTargets + " estimated endpoints -> " + cappedTargets + " requested by Run budget " + targetCap + "\n" +
                 (sniPairingEnabled() ? sniCount + " SNI host" + (sniCount == 1 ? "" : "s") + " kept separate for TLS/Host routing; " : "IP-only TLS/HTTP probing; ") + "ports " + ports + "\n" +
                 "Runtime: batch " + batch + ", threads " + threads + ", timeout " + timeout + "ms, HTTP path " + path + "\n" +
                 "TLS ClientHello mode: " + tlsMode + "\n" +
@@ -1674,6 +1886,137 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void applyRouteProviderDefaults() {
+        int provider = routeProviderSpinner == null ? 0 : routeProviderSpinner.getSelectedItemPosition();
+        if (provider == 1) {
+            routeProtocolSpinner.setSelection(indexOf(routeProtocolSpinner, "wireguard"));
+            routeAuthSpinner.setSelection(indexOf(routeAuthSpinner, "wsnet_session_ref"));
+            routeDnsSpinner.setSelection(indexOf(routeDnsSpinner, "ctrld"));
+            routeDownstreamSpinner.setSelection(indexOf(routeDownstreamSpinner, "vpn_interface"));
+            routeStrategySpinner.setSelection(indexOf(routeStrategySpinner, "provider_default"));
+            routeProviderChainSpinner.setSelection(indexOf(routeProviderChainSpinner, "none"));
+            routeBeastModeCheck.setChecked(false);
+            routeShareLanCheck.setChecked(false);
+            if (routeProfileRefInput.getText().toString().trim().isEmpty()) routeProfileRefInput.setText("ref:windscribe-profile");
+            if (routeCredentialRefInput.getText().toString().trim().isEmpty()) routeCredentialRefInput.setText("ref:windscribe-session");
+        } else if (provider == 2) {
+            routeProtocolSpinner.setSelection(indexOf(routeProtocolSpinner, "tunnel_core_supervised"));
+            routeAuthSpinner.setSelection(indexOf(routeAuthSpinner, "config_ref"));
+            routeDnsSpinner.setSelection(indexOf(routeDnsSpinner, "remote_dns"));
+            routeDownstreamSpinner.setSelection(indexOf(routeDownstreamSpinner, "local_proxy_gateway"));
+            routeStrategySpinner.setSelection(indexOf(routeStrategySpinner, "conduit_first"));
+            routeConduitModeSpinner.setSelection(indexOf(routeConduitModeSpinner, "auto"));
+            routeProviderChainSpinner.setSelection(indexOf(routeProviderChainSpinner, "none"));
+            routeBeastModeCheck.setChecked(true);
+            if (routeConfigRefInput.getText().toString().trim().isEmpty()) routeConfigRefInput.setText("ref:psiphon-config");
+        } else if (provider == 3) {
+            routeProtocolSpinner.setSelection(indexOf(routeProtocolSpinner, "local_proxy"));
+            routeAuthSpinner.setSelection(indexOf(routeAuthSpinner, "credential_ref"));
+            routeDownstreamSpinner.setSelection(indexOf(routeDownstreamSpinner, "local_proxy_gateway"));
+            routeStrategySpinner.setSelection(indexOf(routeStrategySpinner, "direct"));
+            routeProviderChainSpinner.setSelection(indexOf(routeProviderChainSpinner, "none"));
+            routeBeastModeCheck.setChecked(false);
+            routeShareLanCheck.setChecked(false);
+            if (routeEndpointInput.getText().toString().trim().isEmpty()) routeEndpointInput.setText("socks5://127.0.0.1:1080");
+        }
+        updateRouteReadinessPreview();
+    }
+
+    private int indexOf(Spinner spinner, String value) {
+        if (spinner == null || spinner.getAdapter() == null) return 0;
+        for (int i = 0; i < spinner.getAdapter().getCount(); i++) {
+            if (value.equals(String.valueOf(spinner.getAdapter().getItem(i)))) return i;
+        }
+        return 0;
+    }
+
+    private EdgeRouteProfile buildSelectedRouteProfile() {
+        int provider = routeProviderSpinner == null ? 0 : routeProviderSpinner.getSelectedItemPosition();
+        if (provider == 0) return EdgeRouteProfile.direct();
+        String plugin = provider == 1 ? "windscribe" : provider == 2 ? "psiphon" : "generic-proxy";
+        EdgeRouteProfile profile = new EdgeRouteProfile();
+        profile.enabled = true;
+        profile.providerId = plugin.equals("generic-proxy") ? "" : plugin;
+        profile.pluginId = plugin;
+        profile.routeId = "route-" + plugin + "-android";
+        profile.protocolMode = spinnerText(routeProtocolSpinner);
+        profile.authMode = spinnerText(routeAuthSpinner);
+        profile.dnsPolicy = spinnerText(routeDnsSpinner);
+        profile.splitTunnel = spinnerText(routeSplitSpinner);
+        profile.upstreamMode = spinnerText(routeUpstreamSpinner);
+        profile.downstreamMode = spinnerText(routeDownstreamSpinner);
+        profile.gatewayMode = spinnerText(routeGatewaySpinner);
+        profile.routeStrategy = spinnerText(routeStrategySpinner);
+        profile.conduitMode = spinnerText(routeConduitModeSpinner);
+        profile.providerChain = spinnerText(routeProviderChainSpinner);
+        profile.profileRef = safeRouteField(routeProfileRefInput);
+        profile.credentialRef = safeRouteField(routeCredentialRefInput);
+        profile.configRef = safeRouteField(routeConfigRefInput);
+        profile.endpoint = safeRouteField(routeEndpointInput);
+        profile.packageName = safeRouteField(routePackageInput);
+        profile.frontingIpRef = safeRouteField(routeFrontingIpRefInput);
+        profile.frontingSni = safeRouteField(routeFrontingSniInput);
+        profile.chainUpstreamRef = safeRouteField(routeChainUpstreamRefInput);
+        profile.gatewayAuthRef = safeRouteField(routeGatewayAuthRefInput);
+        profile.lanSocksPort = safeRouteField(routeLanSocksPortInput);
+        profile.lanHttpPort = safeRouteField(routeLanHttpPortInput);
+        profile.shareProxyOnLan = routeShareLanCheck != null && routeShareLanCheck.isChecked();
+        profile.beastMode = routeBeastModeCheck != null && routeBeastModeCheck.isChecked();
+        profile.routeBinding = routeBindingFor(profile);
+        return profile;
+    }
+
+    private String routeBindingFor(EdgeRouteProfile profile) {
+        if (!profile.enabled) return "direct";
+        if ("psiphon".equals(profile.pluginId)) {
+            return ("external_vpn_apk".equals(profile.protocolMode) || "external_vpn".equals(profile.protocolMode))
+                    ? "external_vpn_observation" : "tunnel_core_local_proxy";
+        }
+        if ("windscribe".equals(profile.pluginId)) {
+            if ("local_proxy".equals(profile.protocolMode)) return "local_proxy_gateway";
+            if (Arrays.asList("wireguard", "openvpn_udp", "openvpn_tcp", "tcp", "stealth", "wstunnel", "ikev2").contains(profile.protocolMode)) {
+                return "profile_backed_vpn_or_proxy";
+            }
+            return "external_vpn_observation";
+        }
+        return "generic_local_proxy";
+    }
+
+    private void updateRouteReadinessPreview() {
+        if (routeReadinessView == null) return;
+        EdgeRouteProfile profile = buildSelectedRouteProfile();
+        String text;
+        if (!profile.enabled) {
+            text = "Route readiness: direct scan path\nNo provider route metadata will be attached.";
+        } else if ("windscribe".equals(profile.pluginId)) {
+            WindscribeAuthSession session = WindscribeAuthSession.fromRefs(profile.credentialRef, profile.profileRef);
+            WindscribeRouteObserver.RouteObservation observation = WindscribeRouteObserver.observe(this, profile, session);
+            text = observation.summary();
+        } else if ("psiphon".equals(profile.pluginId)) {
+            PsiphonTunnelSupervisor.Readiness readiness = PsiphonTunnelSupervisor.preview(profile);
+            text = readiness.summary();
+        } else {
+            text = "Route readiness: generic local proxy\nendpoint=" + redactedValue(profile.endpoint) +
+                    "\nstate=" + (profile.endpoint.isEmpty() ? "needs endpoint" : "ready for local proxy probe");
+        }
+        routeReadinessView.setText(text);
+    }
+
+    private String spinnerText(Spinner spinner) {
+        return spinner == null || spinner.getSelectedItem() == null ? "" : String.valueOf(spinner.getSelectedItem()).trim();
+    }
+
+    private String safeRouteField(EditText field) {
+        if (field == null) return "";
+        return field.getText().toString().replace('\r', ' ').replace('\n', ' ').trim();
+    }
+
+    private static String redactedValue(String value) {
+        if (value == null || value.isEmpty()) return "--";
+        if (value.startsWith("ref:")) return value;
+        return value.replaceAll("(?i)(token|secret|password|auth)[^@/\\s]*", "[redacted]");
+    }
+
     private void startScan() {
         if (executor != null && !executor.isShutdown()) {
             toast("Scan is already running");
@@ -1689,20 +2032,32 @@ public class MainActivity extends Activity {
             return;
         }
         stop.set(false);
-        synchronized (allResults) {
-            allResults.clear();
-        }
+        resultStore.clear();
+        pendingResults.clear();
+        resultDrainQueued.set(false);
+        ui.removeCallbacks(progressRunnable);
+        progressQueued.set(false);
+        resultSequence.set(0);
+        long generation = scanGeneration.incrementAndGet();
         checkedTargets.set(0);
         scanStartedAt = System.currentTimeMillis();
         resultSummaryContainer.removeAllViews();
         heatmapContainer.removeAllViews();
         pagerContainer.removeAllViews();
+        resultSummaryText = null;
+        pagerPanel = null;
+        pagerText = null;
+        pagerPrevButton = null;
+        pagerNextButton = null;
+        heatmapRenderedAt = 0;
         resultsAdapter.setResults(Collections.emptyList());
         synchronized (logLines) {
             logLines.clear();
             stableLogBuilder.setLength(0);
         }
         logView.setText("");
+        lastRenderedLogText = "";
+        logRenderedAt = 0;
         bestView.setText("Best result will appear here");
         if (snis.isEmpty()) snis = Collections.singletonList("");
         List<Integer> workflowProfiles = selectedWorkflowProfiles();
@@ -1717,9 +2072,11 @@ public class MainActivity extends Activity {
         String httpPath = pathInput.getText().toString();
         int tlsMode = tlsModeSpinner == null ? 0 : tlsModeSpinner.getSelectedItemPosition();
         totalTargets = estimateAttemptUnits(targets.size(), snis.size(), ports.size(), workflowProfiles, allSniPreference);
-        int batch = clampInt(intValue(batchInput, 2000), 1, MAX_BATCH);
-        int threads = clampInt(intValue(threadsInput, 32), 1, MAX_THREADS);
-        int timeout = clampInt(intValue(timeoutInput, 3000), 250, 15000);
+        int batch = Math.max(1, intValue(batchInput, 2000));
+        int threads = Math.max(1, intValue(threadsInput, 32));
+        int timeout = Math.max(1, intValue(timeoutInput, 3000));
+        EdgeRouteProfile routeProfile = buildSelectedRouteProfile();
+        updateRouteReadinessPreview();
 
         startButton.setEnabled(false);
         stopButton.setEnabled(true);
@@ -1728,12 +2085,15 @@ public class MainActivity extends Activity {
         appendLog("Scan started: expanded_targets=" + targets.size() + ", sni_hosts=" + snis.size() +
                 ", probe_units=" + totalTargets + ", ports=" + ports + ", batch=" + batch +
                 ", threads=" + threads + ", workflow=" + workflowSpinner.getSelectedItem() +
-                ", steps=" + workflowLabels(workflowProfiles));
+                ", steps=" + workflowLabels(workflowProfiles) + ", route=" + routeProfile.summary());
+        ScanForegroundService.start(this, "running",
+                "0 / " + totalTargets + " probe units", 0);
         appendResourceWarnings(threads, batch, timeout, targets.size());
-        executor = Executors.newFixedThreadPool(threads);
+        ExecutorService scanExecutor = Executors.newFixedThreadPool(threads);
+        executor = scanExecutor;
         List<String> finalSnis = snis;
-        new Thread(() -> runWorkflow(targets, finalSnis, ports, batch, timeout, workflowProfiles,
-                allSniPreference, httpPath, tlsMode, suppressNoisyLogs), "scan-orchestrator").start();
+        new Thread(() -> runWorkflow(generation, scanExecutor, targets, finalSnis, ports, batch, timeout, workflowProfiles,
+                allSniPreference, httpPath, tlsMode, suppressNoisyLogs, routeProfile), "scan-orchestrator").start();
     }
 
     private void requestStop() {
@@ -1741,6 +2101,8 @@ public class MainActivity extends Activity {
         status.setText("Stopping");
         stopButton.setEnabled(false);
         appendLog("Stop requested. Current sockets will finish or time out.");
+        ScanForegroundService.update(this, "cancelling",
+                checkedTargets.get() + " / " + totalTargets + " probe units", progressPercent());
     }
 
     private List<Integer> selectedWorkflowProfiles() {
@@ -1779,44 +2141,47 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void runWorkflow(List<String> targets, List<String> snis, List<Integer> ports, int batchSize,
+    private void runWorkflow(long generation, ExecutorService scanExecutor, List<String> targets, List<String> snis, List<Integer> ports, int batchSize,
                              int timeout, List<Integer> profiles, boolean allSniPreference,
-                             String httpPath, int tlsMode, boolean suppressNoisyLogs) {
-        for (int i = 0; i < profiles.size() && !stop.get(); i++) {
+                             String httpPath, int tlsMode, boolean suppressNoisyLogs, EdgeRouteProfile routeProfile) {
+        for (int i = 0; i < profiles.size() && !stop.get() && generation == scanGeneration.get(); i++) {
             int profile = profiles.get(i);
             boolean allSni = sniPairingEnabled() && (allSniPreference || profile >= 2);
             appendLog("Workflow step " + (i + 1) + "/" + profiles.size() + ": " + profileName(profile) +
                     (sniPairingEnabled() ? (allSni ? " with multi-SNI" : " with primary SNI") : " with IP-only probing"));
-            runBatches(targets, snis, ports, batchSize, timeout, profile, allSni, httpPath, tlsMode, suppressNoisyLogs);
+            runBatches(generation, scanExecutor, targets, snis, ports, batchSize, timeout, profile, allSni, httpPath, tlsMode, suppressNoisyLogs, routeProfile);
         }
-        executor.shutdownNow();
+        scanExecutor.shutdownNow();
         ui.post(() -> {
+            if (generation != scanGeneration.get()) return;
+            if (executor == scanExecutor) executor = null;
             startButton.setEnabled(true);
             stopButton.setEnabled(false);
             status.setText(stop.get() ? "Stopped" : "Ready");
             appendLog((stop.get() ? "Stopped" : "Complete") + " in " + elapsed());
             if (!stop.get()) checkedTargets.set(totalTargets);
             if (!stop.get()) saveLocalObservationHistory();
-            updateProgress();
+            renderProgressDirect();
+            ScanForegroundService.stop(this, stop.get() ? "Scan stopped" : "Scan completed");
             renderResults();
         });
     }
 
-    private void runBatches(List<String> targets, List<String> snis, List<Integer> ports, int batchSize,
-                            int timeout, int profile, boolean allSni, String httpPath, int tlsMode, boolean suppressNoisyLogs) {
+    private void runBatches(long generation, ExecutorService scanExecutor, List<String> targets, List<String> snis, List<Integer> ports, int batchSize,
+                            int timeout, int profile, boolean allSni, String httpPath, int tlsMode, boolean suppressNoisyLogs, EdgeRouteProfile routeProfile) {
         int batches = (targets.size() + batchSize - 1) / batchSize;
-        for (int start = 0, batchNo = 1; start < targets.size() && !stop.get(); start += batchSize, batchNo++) {
+        for (int start = 0, batchNo = 1; start < targets.size() && !stop.get() && generation == scanGeneration.get(); start += batchSize, batchNo++) {
             List<String> batch = targets.subList(start, Math.min(targets.size(), start + batchSize));
             appendLog(profileName(profile) + " batch " + batchNo + "/" + batches + ": " + batch.size() + " targets");
             CountDownLatch latch = new CountDownLatch(batch.size());
             for (String target : batch) {
-                if (stop.get()) {
+                if (stop.get() || generation != scanGeneration.get()) {
                     latch.countDown();
                     continue;
                 }
                 try {
-                    executor.submit(() -> {
-                        try { scanTarget(target, snis, ports, timeout, profile, allSni, httpPath, tlsMode, suppressNoisyLogs); }
+                    scanExecutor.submit(() -> {
+                            try { scanTarget(generation, target, snis, ports, timeout, profile, allSni, httpPath, tlsMode, suppressNoisyLogs, routeProfile); }
                         finally {
                             updateProgress();
                             latch.countDown();
@@ -1839,65 +2204,90 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void scanTarget(String target, List<String> snis, List<Integer> ports, int timeout, int profile,
-                            boolean allSni, String httpPath, int tlsMode, boolean suppressNoisyLogs) {
-        if (stop.get()) return;
+    private void scanTarget(long generation, String target, List<String> snis, List<Integer> ports, int timeout, int profile,
+                            boolean allSni, String httpPath, int tlsMode, boolean suppressNoisyLogs, EdgeRouteProfile routeProfile) {
+        if (stop.get() || generation != scanGeneration.get()) return;
         List<String> ips = resolve(target);
         if (ips.isEmpty()) {
-            addResult(Result.down(target, "", 0, "", "dns_failed"), suppressNoisyLogs);
+            addResult(generation, Result.down(target, "", 0, "", "dns_failed").withRoute(routeProfile), suppressNoisyLogs);
             return;
         }
         for (String ip : ips) {
-            if (stop.get()) return;
+            if (stop.get() || generation != scanGeneration.get()) return;
             for (int port : ports) {
                 if (profile == 0) {
                     Result base = new Result(target, ip, port, "");
                     base.tcp(timeout);
-                    addResult(base.finish(), suppressNoisyLogs);
+                    addResult(generation, base.withRoute(routeProfile).finish(), suppressNoisyLogs);
                     continue;
                 }
                 List<String> candidates = sniPairingEnabled()
                         ? (allSni ? snis : Collections.singletonList(isIp(target) ? first(snis) : target))
                         : Collections.singletonList("");
                 for (String sni : candidates) {
-                    if (stop.get()) return;
+                    if (stop.get() || generation != scanGeneration.get()) return;
                     String routeSni = sni == null ? "" : sni.trim();
                     Result r = new Result(target, ip, port, routeSni);
                     r.tls(timeout, tlsMode);
                     if (profile >= 2 && r.tlsPass) r.http(timeout, httpPath, tlsMode);
-                    addResult(r.finish(), suppressNoisyLogs);
+                    addResult(generation, r.withRoute(routeProfile).finish(), suppressNoisyLogs);
                     if (profile == 3 && r.httpPass) break;
                 }
             }
         }
     }
 
-    private void addResult(Result r, boolean suppressNoisyLogs) {
-        int resultCount;
-        synchronized (allResults) {
-            allResults.add(r);
-            resultCount = allResults.size();
-        }
+    private void addResult(long generation, Result r, boolean suppressNoisyLogs) {
+        if (generation != scanGeneration.get()) return;
+        r.rowId = resultSequence.incrementAndGet();
         checkedTargets.incrementAndGet();
-        if (!suppressNoisyLogs && (r.tlsPass || r.httpPass || resultCount % 200 == 0)) {
-            appendLog("Result " + r.address() + " sni=" + dash(r.sni) + " tcp=" + r.tcpPass +
-                    " tls=" + r.tlsPass + " http=" + r.httpPass + " q=" + Math.round(r.quality));
+        ResultEvent event = new ResultEvent(r, suppressNoisyLogs, generation);
+        boolean queued = false;
+        while (!queued && !stop.get() && generation == scanGeneration.get()) {
+            try {
+                queued = pendingResults.offer(event, 250, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (!queued) {
+                scheduleResultDrain();
+            }
         }
-        scheduleRender();
+        if (queued && generation == scanGeneration.get()) scheduleResultDrain();
     }
 
     private void updateProgress() {
-        ui.post(() -> {
-            progress.setMax(Math.max(1, totalTargets));
-            int checked = Math.min(checkedTargets.get(), Math.max(1, totalTargets));
-            progress.setProgress(checked);
-            Stats s = stats();
-            metrics.setText(checked + " / " + totalTargets + " probe units | rows " + s.rows + " | TCP " + s.tcp +
-                    " | TLS " + s.tls + " | HTTP " + s.http + " | Q " + Math.round(s.bestQuality) + " | " + elapsed());
-            countersView.setText("Down " + s.down + " | timeout " + s.timeout + " | reset " + s.reset +
-                    " | cert " + s.cert + " | DNS " + s.dns + " | " + resourceLine());
-            if (s.best != null) bestView.setText("Best: " + s.best.summary());
-        });
+        if (!progressQueued.compareAndSet(false, true)) return;
+        ui.postDelayed(progressRunnable, 120);
+    }
+
+    private final Runnable progressRunnable = () -> {
+        progressQueued.set(false);
+        renderProgressDirect();
+    };
+
+    private int progressPercent() {
+        int total = Math.max(1, totalTargets);
+        int checked = Math.max(0, Math.min(checkedTargets.get(), total));
+        return (int) Math.min(100, Math.max(0, Math.round((checked * 100.0) / total)));
+    }
+
+    private void renderProgressDirect() {
+        progress.setMax(Math.max(1, totalTargets));
+        int checked = Math.min(checkedTargets.get(), Math.max(1, totalTargets));
+        progress.setProgress(checked);
+        Stats s = stats();
+        metrics.setText(checked + " / " + totalTargets + " probe units | rows " + s.rows + " | TCP " + s.tcp +
+                " | TLS " + s.tls + " | HTTP " + s.http + " | Q " + Math.round(s.bestQuality) +
+                " | queued " + pendingResults.size() + " | " + elapsed());
+        countersView.setText("Down " + s.down + " | timeout " + s.timeout + " | reset " + s.reset +
+                " | cert " + s.cert + " | DNS " + s.dns + " | " + resourceLine());
+        if (s.best != null) bestView.setText("Best: " + s.best.summary());
+        if (executor != null && !executor.isShutdown()) {
+            ScanForegroundService.update(this, "running",
+                    checked + " / " + totalTargets + " probe units", progressPercent());
+        }
     }
 
     private void scheduleRender() {
@@ -1911,22 +2301,55 @@ public class MainActivity extends Activity {
         renderResults();
     };
 
+    private final Runnable resultDrainRunnable = () -> {
+        resultDrainQueued.set(false);
+        int drained = 0;
+        ResultEvent event;
+        while (drained < RESULT_DRAIN_BATCH && (event = pendingResults.poll()) != null) {
+            if (event.generation != scanGeneration.get()) {
+                drained++;
+                continue;
+            }
+            int resultCount = resultStore.append(event.result);
+            Result r = event.result;
+            if (!event.suppressNoisyLogs && (r.tlsPass || r.httpPass || resultCount % 200 == 0)) {
+                appendLog("Result " + r.address() + " sni=" + dash(r.sni) + " tcp=" + r.tcpPass +
+                        " tls=" + r.tlsPass + " http=" + r.httpPass + " q=" + Math.round(r.quality));
+            }
+            drained++;
+        }
+        if (drained > 0) {
+            updateProgress();
+            scheduleRender();
+        }
+        if (!pendingResults.isEmpty()) {
+            scheduleResultDrain();
+        }
+    };
+
+    private void scheduleResultDrain() {
+        if (!resultDrainQueued.compareAndSet(false, true)) return;
+        ui.post(resultDrainRunnable);
+    }
+
     private void renderResults() {
         if (resultList == null) return;
         List<Result> snapshot = filteredResults();
+        long now = System.currentTimeMillis();
+        boolean analyticsDue = activeTab == 1 && now - analyticsRenderedAt >= (batteryFriendlyMode() ? 5000 : 2500);
         if (batteryFriendlyMode() || compactMode()) {
             if (analyticsPanel != null) analyticsPanel.setVisibility(View.GONE);
-        } else {
+        } else if (analyticsDue) {
             if (analyticsPanel != null) analyticsPanel.setVisibility(View.VISIBLE);
             updateAnalytics(snapshot);
+            analyticsRenderedAt = now;
         }
         renderStableHistoryPanel();
 
-        resultSummaryContainer.removeAllViews();
-        heatmapContainer.removeAllViews();
-        pagerContainer.removeAllViews();
-
         if (snapshot.isEmpty()) {
+            updateResultSummary(snapshot);
+            updateHeatmapPanel(snapshot, now);
+            updatePagerPanel(0, 0, 0, 1, false);
             bestView.setText("Best result unavailable\n");
             resultsAdapter.setResults(Collections.emptyList());
             return;
@@ -1934,13 +2357,9 @@ public class MainActivity extends Activity {
         Result bestVisible = bestVisibleResult(snapshot);
         bestView.setText((bestVisible == null ? "Best result unavailable" : "Best: " + bestVisible.summary()) + "\n" + bestSniLine(snapshot));
         
-        resultSummaryContainer.addView(resultSummaryStrip(snapshot));
-        if (!batteryFriendlyMode() && !compactMode() && visualizationMode == 1) {
-            heatmapContainer.addView(heatmapView(snapshot));
-        }
-        int limit = Math.min(clampInt(intValue(resultLimitInput, 250), 1, MAX_RENDERED_CARDS), snapshot.size());
-        if (batteryFriendlyMode()) limit = Math.min(limit, 75);
-        if (compactMode()) limit = Math.min(limit, 90);
+        updateResultSummary(snapshot);
+        updateHeatmapPanel(snapshot, now);
+        int limit = Math.min(Math.max(1, intValue(resultLimitInput, 1000)), snapshot.size());
         int maxStart = Math.max(0, snapshot.size() - limit);
         resultOffset = Math.min(Math.max(0, resultOffset), maxStart);
         int end = Math.min(snapshot.size(), resultOffset + limit);
@@ -1951,9 +2370,7 @@ public class MainActivity extends Activity {
         }
         resultsAdapter.setResults(sliced);
 
-        if (limit < snapshot.size()) {
-            pagerContainer.addView(resultPager(resultOffset, end, snapshot.size(), limit));
-        }
+        updatePagerPanel(resultOffset, end, snapshot.size(), limit, limit < snapshot.size());
     }
 
     private void renderResultsFromFirstPage() {
@@ -1961,39 +2378,83 @@ public class MainActivity extends Activity {
         scheduleRender();
     }
 
-    private View resultPager(int start, int end, int total, int pageSize) {
-        LinearLayout panel = column();
-        panel.setBackground(glassBg(Color.rgb(8, 20, 29), Color.argb(60, 255, 255, 255)));
-        panel.setPadding(dp(9), dp(6), dp(9), dp(8));
-        setOuterMargin(panel, 0, dp(6), 0, dp(8));
-        panel.addView(text("Showing cards " + (start + 1) + "-" + end + " of " + total, 11, Color.rgb(185, 210, 222), false));
-        LinearLayout controls = row();
-        Button prev = button("Previous", Color.rgb(24, 45, 58), Color.WHITE);
-        Button next = button("Next", Color.rgb(24, 45, 58), Color.WHITE);
-        prev.setEnabled(start > 0);
-        next.setEnabled(end < total);
-        prev.setOnClickListener(v -> {
+    private void updateResultSummary(List<Result> rows) {
+        if (resultSummaryContainer == null) return;
+        if (rows == null || rows.isEmpty()) {
+            resultSummaryContainer.setVisibility(View.GONE);
+            return;
+        }
+        if (resultSummaryText == null) {
+            resultSummaryText = panelText("");
+            formatMonospace(resultSummaryText, 11);
+            resultSummaryContainer.addView(resultSummaryText);
+        }
+        resultSummaryContainer.setVisibility(View.VISIBLE);
+        resultSummaryText.setText(resultSummaryLine(rows));
+    }
+
+    private void updateHeatmapPanel(List<Result> rows, long now) {
+        if (heatmapContainer == null) return;
+        boolean visible = rows != null && !rows.isEmpty() && activeTab == 1 && !batteryFriendlyMode() && !compactMode() && visualizationMode == 1;
+        if (!visible) {
+            heatmapContainer.setVisibility(View.GONE);
+            return;
+        }
+        long cadence = batteryFriendlyMode() ? 5000 : 2500;
+        if (heatmapContainer.getChildCount() > 0 && now - heatmapRenderedAt < cadence) {
+            heatmapContainer.setVisibility(View.VISIBLE);
+            return;
+        }
+        heatmapRenderedAt = now;
+        heatmapContainer.removeAllViews();
+        heatmapContainer.addView(heatmapView(rows));
+        heatmapContainer.setVisibility(View.VISIBLE);
+    }
+
+    private void updatePagerPanel(int start, int end, int total, int pageSize, boolean visible) {
+        if (pagerContainer == null) return;
+        if (!visible) {
+            pagerContainer.setVisibility(View.GONE);
+            return;
+        }
+        ensurePagerPanel();
+        pagerContainer.setVisibility(View.VISIBLE);
+        pagerText.setText("Showing cards " + (start + 1) + "-" + end + " of " + total);
+        pagerPrevButton.setEnabled(start > 0);
+        pagerNextButton.setEnabled(end < total);
+        pagerPrevButton.setOnClickListener(v -> {
             resultOffset = Math.max(0, resultOffset - pageSize);
             renderResults();
         });
-        next.setOnClickListener(v -> {
+        pagerNextButton.setOnClickListener(v -> {
             resultOffset = Math.min(Math.max(0, total - pageSize), resultOffset + pageSize);
             renderResults();
         });
-        controls.addView(prev, weight());
-        controls.addView(next, weight());
-        panel.addView(controls);
-        return panel;
     }
 
-    private View resultSummaryStrip(List<Result> rows) {
+    private void ensurePagerPanel() {
+        if (pagerPanel != null) return;
+        pagerPanel = column();
+        pagerPanel.setBackground(glassBg(Color.rgb(8, 20, 29), Color.argb(60, 255, 255, 255)));
+        pagerPanel.setPadding(dp(9), dp(6), dp(9), dp(8));
+        setOuterMargin(pagerPanel, 0, dp(6), 0, dp(8));
+        pagerText = text("", 11, Color.rgb(185, 210, 222), false);
+        pagerPanel.addView(pagerText);
+        LinearLayout controls = row();
+        pagerPrevButton = button("Previous", Color.rgb(24, 45, 58), Color.WHITE);
+        pagerNextButton = button("Next", Color.rgb(24, 45, 58), Color.WHITE);
+        controls.addView(pagerPrevButton, weight());
+        controls.addView(pagerNextButton, weight());
+        pagerPanel.addView(controls);
+        pagerContainer.addView(pagerPanel);
+    }
+
+    private String resultSummaryLine(List<Result> rows) {
         int working = 0;
         long latencySum = 0, best = Long.MAX_VALUE;
         int latencyCount = 0;
         int rawCount;
-        synchronized (allResults) {
-            rawCount = allResults.size();
-        }
+        rawCount = resultStore.size();
         for (Result r : rows) {
             if (r.working()) working++;
             long latency = r.totalLatency();
@@ -2004,16 +2465,13 @@ public class MainActivity extends Activity {
             }
         }
         int success = rows.isEmpty() ? 0 : Math.round(working * 100f / rows.size());
-        String line = "Visible results: " + rows.size() + " of " + rawCount +
+        return "Visible results: " + rows.size() + " of " + rawCount +
                 " | alive/working " + working +
                 " | success " + success + "%" +
                 " | best " + (best == Long.MAX_VALUE ? "--" : best + "ms") +
                 " | avg " + (latencyCount == 0 ? "--" : Math.round(latencySum / (float) latencyCount) + "ms") +
                 " | " + bestSniLine(rows) +
                 " | filters " + filterSummary();
-        TextView v = panelText(line);
-        formatMonospace(v, 11);
-        return v;
     }
 
     private String bestSniLine(List<Result> rows) {
@@ -2080,7 +2538,7 @@ public class MainActivity extends Activity {
         icon.setGravity(Gravity.CENTER);
         card.addView(icon);
         boolean hasRows;
-        synchronized (allResults) { hasRows = !allResults.isEmpty(); }
+        hasRows = !resultStore.isEmpty();
         card.addView(text(hasRows ? "Filters hid every row" : "No visible edges yet", 16, Color.WHITE, true));
         card.addView(text(hasRows ? "Loosen provider, score, latency, SNI, certificate, or status filters to reveal existing scan rows." :
                 "Start a scan from Sources. Result cards will stay here; copy and export never replace them.", 12, Color.rgb(205, 226, 238), false));
@@ -2225,7 +2683,7 @@ public class MainActivity extends Activity {
         panel.addView(text("Colors: green HTTP, cyan TLS, amber TCP, red failed.", 11, MUTED, false));
         int columns = 12;
         LinearLayout row = null;
-        int limit = Math.min(rows.size(), 512);
+        int limit = rows.size();
         for (int i = 0; i < limit; i++) {
             if (i % columns == 0) {
                 row = row();
@@ -2241,7 +2699,6 @@ public class MainActivity extends Activity {
             tile.setOnClickListener(v -> copyOne(r));
             row.addView(tile, heatTileLp());
         }
-        if (rows.size() > limit) panel.addView(text("Showing first " + limit + " of " + rows.size() + " filtered results.", 11, MUTED, false));
         return panel;
     }
 
@@ -2274,8 +2731,7 @@ public class MainActivity extends Activity {
         int sort = sortSpinner.getSelectedItemPosition();
 
         List<Result> snapshot = new ArrayList<>();
-        synchronized (allResults) {
-            for (Result r : allResults) {
+        for (Result r : resultStore.snapshot()) {
                 if (fWorking && !r.working()) continue;
                 if (fTlsHttp && !(r.tlsPass || r.httpPass)) continue;
                 if (rHttp && !r.httpPass) continue;
@@ -2288,7 +2744,6 @@ public class MainActivity extends Activity {
                 if (!sni.isEmpty() && !r.sni.toLowerCase(Locale.US).contains(sni)) continue;
                 if (!cert.isEmpty() && !r.tlsCert.toLowerCase(Locale.US).contains(cert)) continue;
                 snapshot.add(r);
-            }
         }
         if (bPerIp) {
             Map<String, Result> best = new LinkedHashMap<>();
@@ -2370,6 +2825,7 @@ public class MainActivity extends Activity {
         card.addView(signal);
         card.addView(body);
         if (!compactMode() && !r.tlsVersion.isEmpty()) card.addView(text(r.tlsVersion + " | " + r.tlsCipher + " | ALPN " + dash(r.alpn) + " | TLS " + dash(r.tlsProfile), 11, highContrastMode() ? Color.WHITE : MUTED, false));
+        if (!compactMode() && !r.routeProviderId.isEmpty()) card.addView(text("Route " + r.routeProviderId + " | " + r.routeBinding + " | " + r.routeProtocolMode + " | DNS " + r.routeDnsPolicy, 11, Color.rgb(175, 230, 215), false));
         if (!compactMode() && r.http3Hint) card.addView(text("HTTP/3 advertised via Alt-Svc: " + trim(r.altSvc, 120), 11, Color.rgb(150, 232, 255), false));
         if (!compactMode() && !r.tlsCert.isEmpty()) card.addView(text(trim(r.tlsCert, 120), 11, highContrastMode() ? Color.WHITE : MUTED, false));
         if (!r.reason.isEmpty()) card.addView(text(r.reason, 11, Color.rgb(255, 180, 180), false));
@@ -2477,11 +2933,95 @@ public class MainActivity extends Activity {
 
     private void exportJson() {
         try {
-            JSONArray arr = new JSONArray();
-            for (Result r : filteredResults()) arr.put(r.json());
-            File out = new File(getExternalFilesDir(null), "maybeedgescanner_scan_" + System.currentTimeMillis() + ".json");
-            try (Writer w = new OutputStreamWriter(new FileOutputStream(out), StandardCharsets.UTF_8)) {
-                w.write(arr.toString(2));
+            List<Result> rows = exportRowsForFile();
+            String redactionMode = exportRedactionMode();
+            int format = fileExportSpinner == null ? 0 : fileExportSpinner.getSelectedItemPosition();
+            String base = "maybeedgescanner_export_" + System.currentTimeMillis();
+            String extension = format == 0 ? ".jsonl" : format == 1 ? ".csv" : format == 2 ? ".md" : ".xml";
+            File out = new File(getExternalFilesDir(null), base + extension);
+            JSONObject meta = buildExportMeta(formatLabelForFileExport(format), redactionMode, rows.size());
+            try (BufferedWriter w = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(out), StandardCharsets.UTF_8))) {
+                if (format == 0) {
+                    JSONObject metaLine = new JSONObject(meta.toString());
+                    metaLine.put("record_type", "export_meta");
+                    w.write(metaLine.toString());
+                    w.newLine();
+                    for (Result row : rows) {
+                        JSONObject item = exportResultJson(row, redactionMode);
+                        item.put("record_type", "scan_result");
+                        w.write(item.toString());
+                        w.newLine();
+                    }
+                } else if (format == 1) {
+                    w.write("# schema_version: " + meta.optInt("schema_version"));
+                    w.newLine();
+                    w.write("# app_version: " + meta.optString("app_version"));
+                    w.newLine();
+                    w.write("# scan_session_id: " + meta.optString("scan_session_id"));
+                    w.newLine();
+                    w.write("# product_mode: " + meta.optString("product_mode"));
+                    w.newLine();
+                    w.write("# redaction_mode: " + meta.optString("redaction_mode"));
+                    w.newLine();
+                    w.write("target,ip,port,sni,tcp,tls,http,http_status,latency_ms,alpn,tls_profile,http3_hint,cdn,route_provider,route_dns_policy,quality,reason");
+                    w.newLine();
+                    for (Result row : rows) {
+                        JSONObject item = exportResultJson(row, redactionMode);
+                        w.write(csvCell(item.optString("target")) + "," + csvCell(item.optString("ip")) + "," + item.optInt("port") + "," +
+                                csvCell(item.optString("sni")) + "," + item.optBoolean("tcpPass") + "," + item.optBoolean("tlsPass") + "," +
+                                item.optBoolean("httpPass") + "," + item.optInt("httpStatus") + "," + item.optLong("totalLatencyMs") + "," +
+                                csvCell(item.optString("alpn")) + "," + csvCell(item.optString("tlsProfile")) + "," + item.optBoolean("http3Hint") + "," +
+                                csvCell(item.optString("cdn")) + "," + csvCell(item.optString("routeProviderId")) + "," +
+                                csvCell(item.optString("routeDnsPolicy")) + "," + item.optLong("qualityRounded") + "," + csvCell(item.optString("reason")));
+                        w.newLine();
+                    }
+                } else if (format == 2) {
+                    w.write("# MaybeEdgeScanner Report");
+                    w.newLine();
+                    w.newLine();
+                    w.write("- schema_version: " + meta.optInt("schema_version"));
+                    w.newLine();
+                    w.write("- app_version: " + meta.optString("app_version"));
+                    w.newLine();
+                    w.write("- scan_session_id: " + meta.optString("scan_session_id"));
+                    w.newLine();
+                    w.write("- product_mode: " + meta.optString("product_mode"));
+                    w.newLine();
+                    w.write("- redaction_mode: " + meta.optString("redaction_mode"));
+                    w.newLine();
+                    w.write("- result_count: " + meta.optInt("result_count"));
+                    w.newLine();
+                    w.newLine();
+                    w.write("| target | ip | sni | tcp/tls/http | cdn | route | ms |");
+                    w.newLine();
+                    w.write("| --- | --- | --- | --- | --- | --- | --- |");
+                    w.newLine();
+                    for (Result row : rows) {
+                        JSONObject item = exportResultJson(row, redactionMode);
+                        String checks = (item.optBoolean("tcpPass") ? "T" : "-") + "/" + (item.optBoolean("tlsPass") ? "L" : "-") + "/" + (item.optBoolean("httpPass") ? "H" : "-");
+                        String route = item.optString("routeProviderId");
+                        if (route.isEmpty()) route = "--";
+                        w.write("| " + safeMd(item.optString("target")) + " | " + safeMd(item.optString("ip")) + " | " + safeMd(item.optString("sni")) + " | " + checks + " | " + safeMd(item.optString("cdn")) + " | " + safeMd(route) + " | " + item.optLong("totalLatencyMs") + " |");
+                        w.newLine();
+                    }
+                } else {
+                    w.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+                    w.newLine();
+                    w.write("<nmaprun scanner=\"MaybeEdgeScanner\" args=\"edge scan export\" product_mode=\"" + xmlEscape(meta.optString("product_mode")) + "\" redaction_mode=\"" + xmlEscape(meta.optString("redaction_mode")) + "\" scan_session_id=\"" + xmlEscape(meta.optString("scan_session_id")) + "\">");
+                    w.newLine();
+                    for (Result row : rows) {
+                        JSONObject item = exportResultJson(row, redactionMode);
+                        String ip = item.optString("ip");
+                        int port = item.optInt("port");
+                        if (ip.isEmpty() || port <= 0) continue;
+                        String state = (item.optBoolean("tcpPass") || item.optBoolean("tlsPass") || item.optBoolean("httpPass")) ? "open" : "closed";
+                        String addrType = ip.contains(":") ? "ipv6" : "ipv4";
+                        w.write("<host><status state=\"up\"/><address addr=\"" + xmlEscape(ip) + "\" addrtype=\"" + addrType + "\"/><ports><port protocol=\"tcp\" portid=\"" + port + "\"><state state=\"" + state + "\"/><service name=\"" + xmlEscape(item.optString("sni")) + "\" product=\"" + xmlEscape(item.optString("cdn")) + "\"/></port></ports></host>");
+                        w.newLine();
+                    }
+                    w.write("</nmaprun>");
+                    w.newLine();
+                }
             }
             toast("Exported: " + out.getAbsolutePath());
         } catch (Exception e) {
@@ -2489,11 +3029,109 @@ public class MainActivity extends Activity {
         }
     }
 
+    private List<Result> exportRowsForFile() {
+        return new ArrayList<>(resultStore.snapshot());
+    }
+
+    private String exportRedactionMode() {
+        return exportPrivacyMode != null && exportPrivacyMode.isChecked() ? "privacy" : "none";
+    }
+
+    private String formatLabelForFileExport(int format) {
+        if (format == 1) return "csv";
+        if (format == 2) return "markdown_report";
+        if (format == 3) return "nmap_xml_like";
+        return "jsonl";
+    }
+
+    private JSONObject buildExportMeta(String format, String redactionMode, int resultCount) throws Exception {
+        JSONObject meta = new JSONObject();
+        meta.put("schema_version", 1);
+        meta.put("app_version", appVersionName());
+        meta.put("scan_session_id", resultStore.sessionId());
+        meta.put("product_mode", "route_pairing");
+        meta.put("format", format);
+        meta.put("redaction_mode", redactionMode);
+        meta.put("result_count", resultCount);
+        meta.put("generated_at_ms", System.currentTimeMillis());
+        meta.put("scan_started_at_ms", scanStartedAt);
+        return meta;
+    }
+
+    private String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+
+    private JSONObject exportResultJson(Result row, String redactionMode) throws Exception {
+        JSONObject item = row.json();
+        item.put("totalLatencyMs", row.totalLatency());
+        item.put("qualityRounded", Math.round(row.quality));
+        item.put("redaction_mode", redactionMode);
+        if ("privacy".equals(redactionMode)) {
+            item.put("ip", redactIp(item.optString("ip")));
+            item.put("tlsCert", "[REDACTED]");
+            item.put("certFingerprint", "[REDACTED]");
+            redactRouteField(item, "routeId");
+            redactRouteField(item, "routeProviderId");
+            redactRouteField(item, "routeBinding");
+            redactRouteField(item, "routeProtocolMode");
+            redactRouteField(item, "routeAuthMode");
+            redactRouteField(item, "routeDnsPolicy");
+            redactRouteField(item, "routeReadiness");
+        }
+        return item;
+    }
+
+    private void redactRouteField(JSONObject item, String key) throws Exception {
+        if (item.has(key) && !item.optString(key).isEmpty()) {
+            item.put(key, "[REDACTED]");
+        }
+    }
+
+    private String redactIp(String ip) {
+        if (ip == null || ip.isEmpty()) return ip;
+        if (ip.contains(".")) {
+            String[] parts = ip.split("\\.");
+            if (parts.length == 4) return parts[0] + "." + parts[1] + "." + parts[2] + ".x";
+        }
+        if (ip.contains(":")) {
+            int idx = ip.indexOf("::");
+            if (idx >= 0) return ip.substring(0, idx + 2) + "xxxx";
+            String[] parts = ip.split(":");
+            if (parts.length > 2) return parts[0] + ":" + parts[1] + ":xxxx::";
+        }
+        return "[REDACTED]";
+    }
+
+    private static String csvCell(String value) {
+        if (value == null) value = "";
+        return "\"" + value.replace("\"", "\"\"") + "\"";
+    }
+
+    private static String safeMd(String value) {
+        if (value == null) return "";
+        return value.replace("|", "\\|").replace("\n", " ");
+    }
+
+    private static String xmlEscape(String value) {
+        if (value == null) return "";
+        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&apos;");
+    }
+
     private void clearResults() {
         stop.set(true);
-        synchronized (allResults) {
-            allResults.clear();
-        }
+        ScanForegroundService.stop(this, "Scan cleared");
+        resultStore.clear();
+        pendingResults.clear();
+        resultDrainQueued.set(false);
+        ui.removeCallbacks(progressRunnable);
+        progressQueued.set(false);
+        resultSequence.set(0);
+        scanGeneration.incrementAndGet();
         checkedTargets.set(0);
         totalTargets = 0;
         stableHistoryRenderedAt = 0;
@@ -2501,12 +3139,20 @@ public class MainActivity extends Activity {
         resultSummaryContainer.removeAllViews();
         heatmapContainer.removeAllViews();
         pagerContainer.removeAllViews();
+        resultSummaryText = null;
+        pagerPanel = null;
+        pagerText = null;
+        pagerPrevButton = null;
+        pagerNextButton = null;
+        heatmapRenderedAt = 0;
         resultsAdapter.setResults(Collections.emptyList());
         synchronized (logLines) {
             logLines.clear();
             stableLogBuilder.setLength(0);
         }
         logView.setText("");
+        lastRenderedLogText = "";
+        logRenderedAt = 0;
         metrics.setText("0 / 0 | TCP 0 | TLS 0 | HTTP 0 | Q 0");
         countersView.setText("Down 0 | timeout 0 | reset 0 | cert 0 | DNS 0 | " + resourceLine());
         bestView.setText("Best result will appear here");
@@ -2516,11 +3162,9 @@ public class MainActivity extends Activity {
     private void saveLocalObservationHistory() {
         try {
             JSONObject root = new JSONObject(getSharedPreferences("maybeedgescanner", MODE_PRIVATE).getString("stable_history_v1", "{}"));
-            synchronized (allResults) {
-                LinkedHashSet<String> seenThisRun = new LinkedHashSet<>();
-                for (Result r : allResults) if (r.working() && r.ip != null && !r.ip.isEmpty()) seenThisRun.add(r.ip + ":" + r.port);
-                for (String key : seenThisRun) root.put(key, root.optInt(key, 0) + 1);
-            }
+            LinkedHashSet<String> seenThisRun = new LinkedHashSet<>();
+            for (Result r : resultStore.snapshot()) if (r.working() && r.ip != null && !r.ip.isEmpty()) seenThisRun.add(r.ip + ":" + r.port);
+            for (String key : seenThisRun) root.put(key, root.optInt(key, 0) + 1);
             getSharedPreferences("maybeedgescanner", MODE_PRIVATE).edit().putString("stable_history_v1", root.toString()).apply();
             stableHistoryRenderedAt = 0;
         } catch (Exception ignored) {}
@@ -2558,9 +3202,9 @@ public class MainActivity extends Activity {
 
     private Stats stats() {
         Stats s = new Stats();
-        synchronized (allResults) {
-            s.rows = allResults.size();
-            for (Result r : allResults) {
+        List<Result> snapshot = resultStore.snapshot();
+        s.rows = snapshot.size();
+        for (Result r : snapshot) {
                 if (r.tcpPass) s.tcp++;
                 if (r.tlsPass) s.tls++;
                 if (r.httpPass) s.http++;
@@ -2571,7 +3215,6 @@ public class MainActivity extends Activity {
                 if (reason.contains("cert")) s.cert++;
                 if (reason.contains("dns")) s.dns++;
                 if (r.quality > s.bestQuality) { s.bestQuality = r.quality; s.best = r; }
-            }
         }
         return s;
     }
@@ -2580,6 +3223,18 @@ public class MainActivity extends Activity {
         int rows, tcp, tls, http, down, timeout, reset, cert, dns;
         double bestQuality;
         Result best;
+    }
+
+    private static class ResultEvent {
+        final Result result;
+        final boolean suppressNoisyLogs;
+        final long generation;
+
+        ResultEvent(Result result, boolean suppressNoisyLogs, long generation) {
+            this.result = result;
+            this.suppressNoisyLogs = suppressNoisyLogs;
+            this.generation = generation;
+        }
     }
 
     private static class ProviderHealth {
@@ -2599,10 +3254,12 @@ public class MainActivity extends Activity {
         private static final long serialVersionUID = 1L;
         final String target, ip, sni;
         final int port;
+        long rowId;
         boolean tcpPass, tlsPass, httpPass;
         long tcpLatencyMs, tlsLatencyMs, httpLatencyMs;
         int httpStatus;
         String tlsVersion = "", tlsCipher = "", tlsCert = "", certFingerprint = "", alpn = "", tlsProfile = "", altSvc = "", reason = "", cdn = "UNKNOWN";
+        String routeId = "", routeProviderId = "", routeBinding = "", routeProtocolMode = "", routeAuthMode = "", routeDnsPolicy = "", routeReadiness = "";
         boolean http3Hint;
         double quality;
 
@@ -2611,6 +3268,17 @@ public class MainActivity extends Activity {
         }
         static Result down(String target, String ip, int port, String sni, String reason) {
             Result r = new Result(target, ip, port, sni); r.reason = reason; return r.finish();
+        }
+        Result withRoute(EdgeRouteProfile route) {
+            if (route == null || !route.enabled) return this;
+            routeId = route.routeId;
+            routeProviderId = route.providerId;
+            routeBinding = route.routeBinding;
+            routeProtocolMode = route.protocolMode;
+            routeAuthMode = route.authMode;
+            routeDnsPolicy = route.dnsPolicy;
+            routeReadiness = "not_checked";
+            return this;
         }
         void tcp(int timeout) {
             long t = System.currentTimeMillis();
@@ -2698,7 +3366,8 @@ public class MainActivity extends Activity {
         boolean working() { return tcpPass || tlsPass || httpPass; }
         String address() { return ip == null || ip.isEmpty() ? target : ip + ":" + port; }
         long totalLatency() { return (tcpPass ? tcpLatencyMs : 0) + (tlsPass ? tlsLatencyMs : 0) + (httpPass ? httpLatencyMs : 0); }
-        String summary() { return address() + " " + sni + " " + cdn + " q=" + Math.round(quality) + " " + totalLatency() + "ms"; }
+        String summary() { return address() + " " + sni + " " + cdn + routeSummarySuffix() + " q=" + Math.round(quality) + " " + totalLatency() + "ms"; }
+        String routeSummarySuffix() { return routeProviderId == null || routeProviderId.isEmpty() ? "" : " route=" + routeProviderId + "/" + routeProtocolMode; }
         JSONObject json() throws Exception {
             JSONObject o = new JSONObject();
             o.put("target", target); o.put("ip", ip); o.put("port", port); o.put("sni", sni);
@@ -2707,6 +3376,9 @@ public class MainActivity extends Activity {
             o.put("httpStatus", httpStatus); o.put("tlsVersion", tlsVersion); o.put("tlsCipher", tlsCipher);
             o.put("alpn", alpn); o.put("tlsProfile", tlsProfile); o.put("altSvc", altSvc); o.put("http3Hint", http3Hint);
             o.put("tlsCert", tlsCert); o.put("certFingerprint", certFingerprint); o.put("cdn", cdn);
+            o.put("routeId", routeId); o.put("routeProviderId", routeProviderId); o.put("routeBinding", routeBinding);
+            o.put("routeProtocolMode", routeProtocolMode); o.put("routeAuthMode", routeAuthMode);
+            o.put("routeDnsPolicy", routeDnsPolicy); o.put("routeReadiness", routeReadiness);
             o.put("quality", quality); o.put("reason", reason); return o;
         }
         String csv() {
@@ -2809,7 +3481,7 @@ public class MainActivity extends Activity {
         int cap = Math.max(1, totalCap);
         for (String x : raw) {
             if (out.size() >= cap) break;
-            int remaining = Math.min(200000, cap - out.size());
+            int remaining = cap - out.size();
             if (x.contains("/")) out.addAll(expandCidr(x, remaining));
             else if (x.contains("-")) out.addAll(expandRange(x, remaining));
             else out.add(x);
@@ -3047,12 +3719,16 @@ public class MainActivity extends Activity {
     }
     private void refreshLogViewDirect() {
         if (logView == null) return;
+        if (activeTab != 2) return;
+        long now = System.currentTimeMillis();
+        if (now - logRenderedAt < 250) return;
         String filter = "";
         if (logFilterInput != null) {
             filter = logFilterInput.getText().toString().trim().toLowerCase(Locale.US);
         }
+        String nextText;
         if (filter.isEmpty()) {
-            logView.setText(stableLogBuilder.toString().trim());
+            nextText = stableLogBuilder.toString().trim();
         } else {
             StringBuilder sb = new StringBuilder();
             synchronized (logLines) {
@@ -3062,8 +3738,13 @@ public class MainActivity extends Activity {
                     }
                 }
             }
-            logView.setText(sb.toString().trim());
+            nextText = sb.toString().trim();
         }
+        if (!nextText.equals(lastRenderedLogText)) {
+            logView.setText(nextText);
+            lastRenderedLogText = nextText;
+        }
+        logRenderedAt = now;
     }
     private void runNetworkDiagnostics() {
         if (diagnosticOutputView == null || runDiagnosticsButton == null) return;
@@ -3073,8 +3754,15 @@ public class MainActivity extends Activity {
 
         new Thread(() -> {
             StringBuilder sb = new StringBuilder();
+            ArrayList<String> externalServices = new ArrayList<>();
+            boolean offlineMode = diagnosticsOfflineMode != null && diagnosticsOfflineMode.isChecked();
+            boolean includePublicIp = diagnosticsIncludePublicIp != null && diagnosticsIncludePublicIp.isChecked() && !offlineMode;
             sb.append("=== NETWORK DIAGNOSTIC REPORT ===\n");
             sb.append("Timestamp: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date())).append("\n\n");
+            sb.append("[0] Diagnostic mode:\n");
+            sb.append(" - Offline mode: ").append(offlineMode ? "ON" : "OFF").append('\n');
+            sb.append(" - Public IP probe: ").append(includePublicIp ? "ON" : "OFF").append('\n');
+            sb.append('\n');
 
             // 1. VPN / Proxy Check
             sb.append("[1] Checking proxy & VPN posture:\n");
@@ -3101,77 +3789,131 @@ public class MainActivity extends Activity {
             }
             sb.append("\n");
 
-            // 2. DNS latency test
-            sb.append("[2] Testing DNS resolution latency:\n");
-            String[] dnsHosts = {"one.one.one.one", "dns.google", "aparat.com"};
-            for (String host : dnsHosts) {
-                long start = System.currentTimeMillis();
-                try {
-                    InetAddress[] addrs = InetAddress.getAllByName(host);
-                    long elapsed = System.currentTimeMillis() - start;
-                    sb.append(" - Resolved ").append(host).append(" in ").append(elapsed).append("ms -> [");
-                    for (int i = 0; i < addrs.length; i++) {
-                        sb.append(addrs[i].getHostAddress());
-                        if (i < addrs.length - 1) sb.append(", ");
+            if (offlineMode) {
+                sb.append("[2] DNS/TCP/HTTPS probes:\n");
+                sb.append(" - Skipped in offline diagnostics mode\n\n");
+            } else {
+                // 2. DNS latency test
+                sb.append("[2] Testing DNS resolution latency:\n");
+                String[] dnsHosts = {"one.one.one.one", "dns.google", "aparat.com"};
+                for (String host : dnsHosts) {
+                    long start = System.currentTimeMillis();
+                    try {
+                        InetAddress[] addrs = InetAddress.getAllByName(host);
+                        long elapsed = System.currentTimeMillis() - start;
+                        sb.append(" - Resolved ").append(host).append(" in ").append(elapsed).append("ms -> [");
+                        for (int i = 0; i < addrs.length; i++) {
+                            sb.append(addrs[i].getHostAddress());
+                            if (i < addrs.length - 1) sb.append(", ");
+                        }
+                        sb.append("]\n");
+                    } catch (Exception e) {
+                        sb.append(" - Resolution failed for ").append(host).append(": ").append(e.toString()).append("\n");
                     }
-                    sb.append("]\n");
-                } catch (Exception e) {
-                    sb.append(" - Resolution failed for ").append(host).append(": ").append(e.toString()).append("\n");
+                }
+                sb.append("\n");
+
+                // 3. Raw TCP Latency
+                sb.append("[3] Testing raw TCP connection latency (Port 443):\n");
+                String[][] tcpHosts = {
+                    {"Cloudflare", "1.1.1.1"},
+                    {"Google DNS", "8.8.8.8"},
+                    {"Akamai DNS", "184.26.160.25"},
+                };
+                for (String[] pair : tcpHosts) {
+                    String name = pair[0];
+                    String ip = pair[1];
+                    long start = System.currentTimeMillis();
+                    try (Socket s = new Socket()) {
+                        s.connect(new InetSocketAddress(ip, 443), 2000);
+                        long elapsed = System.currentTimeMillis() - start;
+                        sb.append(" - Connected to ").append(name).append(" (").append(ip).append(") in ").append(elapsed).append("ms\n");
+                    } catch (Exception e) {
+                        sb.append(" - Connection failed to ").append(name).append(" (").append(ip).append("): ").append(e.getMessage()).append("\n");
+                    }
+                }
+                sb.append("\n");
+
+                // 4. HTTPS Protocol & Secure Negotiation Handshake
+                sb.append("[4] Testing secure HTTPS negotiation handshake:\n");
+                String[] httpsTargets = {"https://1.1.1.1", "https://8.8.8.8", "https://www.google.com"};
+                for (String target : httpsTargets) {
+                    long start = System.currentTimeMillis();
+                    HttpURLConnection conn = null;
+                    try {
+                        conn = (HttpURLConnection) new URL(target).openConnection();
+                        conn.setConnectTimeout(2500);
+                        conn.setReadTimeout(2500);
+                        conn.setRequestMethod("GET");
+                        int code = conn.getResponseCode();
+                        long elapsed = System.currentTimeMillis() - start;
+                        sb.append(" - GET ").append(target).append(" status ").append(code).append(" in ").append(elapsed).append("ms\n");
+                        externalServices.add(target);
+                    } catch (Exception e) {
+                        sb.append(" - HTTPS negotiation failed for ").append(target).append(": ").append(e.toString()).append("\n");
+                    } finally {
+                        if (conn != null) conn.disconnect();
+                    }
+                }
+                sb.append("\n");
+                if (includePublicIp) {
+                    sb.append("[5] Public IP probe:\n");
+                    String publicIpURL = "https://api.ipify.org?format=json";
+                    try {
+                        JSONObject publicIp = fetchJson(publicIpURL, 2500);
+                        sb.append(" - api.ipify.org response: ").append(publicIp.optString("ip", "unknown")).append('\n');
+                        externalServices.add(publicIpURL);
+                    } catch (Exception e) {
+                        sb.append(" - Public IP probe failed: ").append(e.getMessage()).append('\n');
+                    }
+                    sb.append('\n');
                 }
             }
-            sb.append("\n");
 
-            // 3. Raw TCP Latency
-            sb.append("[3] Testing raw TCP connection latency (Port 443):\n");
-            String[][] tcpHosts = {
-                {"Cloudflare", "1.1.1.1"},
-                {"Google DNS", "8.8.8.8"},
-                {"Akamai DNS", "184.26.160.25"}
-            };
-            for (String[] pair : tcpHosts) {
-                String name = pair[0];
-                String ip = pair[1];
-                long start = System.currentTimeMillis();
-                try (Socket s = new Socket()) {
-                    s.connect(new InetSocketAddress(ip, 443), 2000);
-                    long elapsed = System.currentTimeMillis() - start;
-                    sb.append(" - Connected to ").append(name).append(" (").append(ip).append(") in ").append(elapsed).append("ms\n");
-                } catch (Exception e) {
-                    sb.append(" - Connection failed to ").append(name).append(" (").append(ip).append("): ").append(e.getMessage()).append("\n");
+            sb.append("[6] Local sidecar state:\n");
+            try {
+                JSONObject heartbeat = fetchJson("http://127.0.0.1:10808/api/heartbeat", 1200);
+                sb.append(" - heartbeat version=").append(heartbeat.optInt("version"))
+                        .append(" state=").append(heartbeat.optString("state", "unknown"))
+                        .append(" uptime_ms=").append(heartbeat.optLong("uptime_ms")).append('\n');
+                String licenseId = heartbeat.optString("license_id", "");
+                if (!licenseId.isEmpty()) {
+                    sb.append(" - sidecar license=").append(licenseId).append('\n');
                 }
-            }
-            sb.append("\n");
-
-            // 4. HTTPS Protocol & Secure Negotiation Handshake
-            sb.append("[4] Testing secure HTTPS negotiation handshake:\n");
-            String[] httpsTargets = {"https://1.1.1.1", "https://8.8.8.8", "https://www.google.com"};
-            for (String target : httpsTargets) {
-                long start = System.currentTimeMillis();
-                HttpURLConnection conn = null;
-                try {
-                    conn = (HttpURLConnection) new URL(target).openConnection();
-                    conn.setConnectTimeout(2500);
-                    conn.setReadTimeout(2500);
-                    conn.setRequestMethod("GET");
-                    int code = conn.getResponseCode();
-                    long elapsed = System.currentTimeMillis() - start;
-                    sb.append(" - GET ").append(target).append(" status ").append(code).append(" in ").append(elapsed).append("ms\n");
-                } catch (Exception e) {
-                    sb.append(" - HTTPS negotiation failed for ").append(target).append(": ").append(e.toString()).append("\n");
-                } finally {
-                    if (conn != null) conn.disconnect();
+                String sourceOffer = heartbeat.optString("source_offer_url", "");
+                if (!sourceOffer.isEmpty()) {
+                    sb.append(" - source offer=").append(sourceOffer).append('\n');
                 }
+            } catch (Exception e) {
+                sb.append(" - heartbeat unavailable: ").append(e.getMessage()).append('\n');
             }
-            sb.append("\n");
+            try {
+                JSONObject corpus = fetchJson("http://127.0.0.1:10808/api/provider-corpus", 1200);
+                sb.append(" - provider corpus id=").append(corpus.optString("corpus_id", "unknown"))
+                        .append(" stale=").append(corpus.optBoolean("stale", false))
+                        .append(" stale_after=").append(corpus.optString("stale_after", "unknown")).append('\n');
+            } catch (Exception e) {
+                sb.append(" - provider corpus status unavailable: ").append(e.getMessage()).append('\n');
+            }
+            sb.append('\n');
 
-            // 5. System stats
-            sb.append("[5] Local routing environments:\n");
+            // 7. System stats
+            sb.append("[7] Local routing environments:\n");
             sb.append(" - Device: ").append(Build.MANUFACTURER).append(" ").append(Build.MODEL).append("\n");
             sb.append(" - Android version: ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
             Runtime rt = Runtime.getRuntime();
             long freeHeap = rt.freeMemory() / (1024 * 1024);
             long totalHeap = rt.totalMemory() / (1024 * 1024);
             sb.append(" - JVM Heap memory: total ").append(totalHeap).append("MB, free ").append(freeHeap).append("MB\n");
+            sb.append('\n');
+
+            sb.append("[8] External services contacted:\n");
+            if (externalServices.isEmpty()) {
+                sb.append(" - none\n");
+            } else {
+                LinkedHashSet<String> unique = new LinkedHashSet<>(externalServices);
+                for (String service : unique) sb.append(" - ").append(service).append('\n');
+            }
 
             String report = sb.toString();
             appendLog("Network diagnostics: completed.");
@@ -3185,12 +3927,38 @@ public class MainActivity extends Activity {
             });
         }, "network-diagnostic-thread").start();
     }
+
+    private JSONObject fetchJson(String endpoint, int timeoutMs) throws Exception {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(endpoint).openConnection();
+            conn.setConnectTimeout(timeoutMs);
+            conn.setReadTimeout(timeoutMs);
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("Accept", "application/json");
+            int statusCode = conn.getResponseCode();
+            InputStream stream = statusCode >= 200 && statusCode < 300 ? conn.getInputStream() : conn.getErrorStream();
+            if (stream == null) throw new IOException("HTTP " + statusCode);
+            String text;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                text = sb.toString();
+            }
+            if (statusCode < 200 || statusCode >= 300) throw new IOException("HTTP " + statusCode + ": " + text);
+            return new JSONObject(text);
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
     private void rebuildStableLogBuilder() { stableLogBuilder.setLength(0); for (String x : logLines) stableLogBuilder.append(x).append('\n'); }
     private int intValue(EditText e, int defaultValue) { try { String s = e.getText().toString().trim(); return s.isEmpty() ? defaultValue : Integer.parseInt(s); } catch (Exception ex) { return defaultValue; } }
     private static int clampInt(int value, int min, int max) { return Math.max(min, Math.min(max, value)); }
     private LinearLayout column() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l; }
     private LinearLayout row() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER); return l; }
-    private TextView text(String s, int sp, int color, boolean bold) { TextView v = new TextView(this); v.setText(s); v.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp); v.setTextColor(color); if (bold) v.setTypeface(Typeface.DEFAULT_BOLD); v.setPadding(0, dp(4), 0, dp(4)); if (Build.VERSION.SDK_INT >= 21) v.setLetterSpacing(0.02f); if (Build.VERSION.SDK_INT >= 23) v.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY); return v; }
+    @SuppressLint("WrongConstant")
+    private TextView text(String s, int sp, int color, boolean bold) { TextView v = new TextView(this); v.setText(s); v.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp); v.setTextColor(color); if (bold) v.setTypeface(Typeface.DEFAULT_BOLD); v.setPadding(0, dp(4), 0, dp(4)); v.setLetterSpacing(0.02f); v.setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY); return v; }
     private TextView panelText(String s) { TextView v = text(s, 12, Color.WHITE, false); v.setBackground(glassBg(PANEL, Color.argb(95, 255, 255, 255))); v.setPadding(dp(10), dp(8), dp(10), dp(8)); setOuterMargin(v, 0, dp(5), 0, dp(5)); return v; }
     private TextView glassText(String s) { TextView v = panelText(s); v.setTextColor(Color.rgb(196, 223, 235)); return v; }
     private TextView quietNote(String body) { TextView v = text(body, 11, Color.rgb(185, 210, 222), false); v.setBackground(glassBg(Color.rgb(8, 20, 29), Color.argb(45, 255, 255, 255))); v.setPadding(dp(9), dp(6), dp(9), dp(6)); setOuterMargin(v, 0, dp(4), 0, dp(6)); return v; }
@@ -3418,7 +4186,7 @@ public class MainActivity extends Activity {
         }
         if (basebandManager == null) {
             basebandManager = new PrivilegedTelephonyBasebandManager();
-            basebandManager.initializePrivilegeContext(new PrivilegedTelephonyBasebandManager.TelephonyLifecycleCallback() {
+            basebandManager.initializePrivilegeContext(this, new PrivilegedTelephonyBasebandManager.TelephonyLifecycleCallback() {
                 @Override
                 public void onServiceConnectionStateChanged(boolean isConnectedActive) {
                     ui.post(() -> {
@@ -3430,8 +4198,16 @@ public class MainActivity extends Activity {
                 @Override
                 public void onOperationComplete(boolean success, String response) {
                     ui.post(() -> {
-                        setShizukuOutput("Binder Mutation:\n" + response);
+                        setShizukuOutput(response);
                         toast(success ? "Radio mode verified" : "Radio write not verified");
+                    });
+                }
+
+                @Override
+                public void onCapabilityReportUpdated(PrivilegedTelephonyBasebandManager.PrivilegedCapabilityReport report) {
+                    ui.post(() -> {
+                        updateShizukuHealthTile();
+                        if (shizukuStatusView != null) refreshShizukuState();
                     });
                 }
             });
@@ -3527,6 +4303,9 @@ public class MainActivity extends Activity {
         sb.append("\nPermission API: v11+ runtime grant");
         sb.append('\n').append(shizukuSetupPathLine());
         sb.append('\n').append(shizukuCapabilityHint(uid));
+        if (basebandManager != null) {
+            sb.append("\n\nCapability report:\n").append(basebandManager.capabilityReport().toDisplayText());
+        }
         sb.append("\nRadio writes: confirmed action with readback");
         shizukuStatusView.setText(sb.toString());
         setShizukuNextStep(granted
@@ -3558,7 +4337,8 @@ public class MainActivity extends Activity {
         String permission = preV11 ? "unsupported server" : (granted ? "granted" : "needed");
         return "Bridge: online | Permission: " + permission + " | Backend: " + backend + "\n"
                 + "Server: " + version + " | Last probe: " + shizukuLastProbeLine() + "\n"
-                + shizukuSetupPathLine();
+                + shizukuSetupPathLine()
+                + (basebandManager == null ? "" : "\n\n" + basebandManager.capabilityReport().toDisplayText());
     }
 
     private String shizukuLastProbeLine() {
@@ -3723,7 +4503,9 @@ public class MainActivity extends Activity {
         }
         setShizukuOutput(label + " running...");
         android.os.AsyncTask.THREAD_POOL_EXECUTOR.execute(() -> {
+            long operationId = shizukuActionSequence.incrementAndGet();
             StringBuilder output = new StringBuilder("Action: ").append(label).append('\n');
+            output.append("operation_id=").append(operationId).append('\n');
             boolean allWritesStarted = true;
             boolean allVerified = true;
             try {
@@ -3753,25 +4535,29 @@ public class MainActivity extends Activity {
                 }
 
                 output.append("\nradio-preferred-network-modes verification:\n");
-                // Bundle settings read
                 StringBuilder readScript = new StringBuilder();
                 for (String key : keys) {
                     readScript.append("echo -n ").append(key).append("= ; /system/bin/settings get global ").append(key).append(" ; ");
                 }
                 CommandResult get = runShizukuProcessCapture(new String[]{"/system/bin/sh", "-c", readScript.toString()}, 8);
-                output.append(get.stdout.trim()).append('\n');
+                output.append("readback_initial:\n").append(get.stdout.trim()).append('\n');
                 if (!get.stderr.trim().isEmpty()) output.append("stderr: ").append(get.stderr.trim()).append('\n');
+                try { Thread.sleep(1500L); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                CommandResult settled = runShizukuProcessCapture(new String[]{"/system/bin/sh", "-c", readScript.toString()}, 8);
+                output.append("readback_after_settle_1500ms:\n").append(settled.stdout.trim()).append('\n');
+                if (!settled.stderr.trim().isEmpty()) output.append("settled_stderr: ").append(settled.stderr.trim()).append('\n');
                 
                 // Verify all keys
                 for (String key : keys) {
-                    if (!get.stdout.contains(key + "=" + value)) {
+                    if (!get.stdout.contains(key + "=" + value) || !settled.stdout.contains(key + "=" + value)) {
                         allVerified = false;
                     }
                 }
+                output.append("classification=").append(allWritesStarted && allVerified ? "verified" : "readback_mismatch_or_rejected").append('\n');
             } catch (Throwable e) {
                 allWritesStarted = false;
                 allVerified = false;
-                output.append("\nFailed: ").append(e.getClass().getSimpleName()).append(": ").append(safeMessage(e));
+                output.append("\nclassification=ipc_or_shell_fault\nFailed: ").append(e.getClass().getSimpleName()).append(": ").append(safeMessage(e));
             }
             final String finalOutput = output.toString();
             final boolean finalWritesStarted = allWritesStarted;
@@ -3813,9 +4599,9 @@ public class MainActivity extends Activity {
                 StringBuilder stderr = new StringBuilder();
                 stdoutThread = collectProcessStream(process.getInputStream(), stdout);
                 stderrThread = collectProcessStream(process.getErrorStream(), stderr);
-                boolean finished = process.waitFor(9, java.util.concurrent.TimeUnit.SECONDS);
+                boolean finished = waitForProcess(process, 9);
                 if (!finished) {
-                    process.destroyForcibly();
+                    terminateProcess(process);
                     exitCode = -2;
                     output = "Action: " + label + "\nExit: timeout\n\nThe privileged command did not finish within 9 seconds. No follow-up command was queued.";
                 } else {
@@ -3907,9 +4693,9 @@ public class MainActivity extends Activity {
             process = startShizukuProcess(command);
             stdoutThread = collectProcessStream(process.getInputStream(), stdout);
             stderrThread = collectProcessStream(process.getErrorStream(), stderr);
-            boolean finished = process.waitFor(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS);
+            boolean finished = waitForProcess(process, timeoutSeconds);
             if (!finished) {
-                process.destroyForcibly();
+                terminateProcess(process);
                 joinQuietly(stdoutThread);
                 joinQuietly(stderrThread);
                 return new CommandResult(-2, bufferedText(stdout), bufferedText(stderr));
@@ -3967,10 +4753,36 @@ public class MainActivity extends Activity {
     }
 
     private void joinQuietly(Thread thread) {
+        if (thread == null) return;
         try {
             thread.join(500);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    private boolean waitForProcess(Process process, int timeoutSeconds) throws InterruptedException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+        }
+        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(timeoutSeconds);
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                process.exitValue();
+                return true;
+            } catch (IllegalThreadStateException ignored) {
+                Thread.sleep(50);
+            }
+        }
+        return false;
+    }
+
+    private void terminateProcess(Process process) {
+        if (process == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            process.destroyForcibly();
+        } else {
+            process.destroy();
         }
     }
 
@@ -4073,15 +4885,36 @@ public class MainActivity extends Activity {
         private final List<Result> mItems = new ArrayList<>();
         private boolean mIsEmptyState = false;
 
+        ResultsAdapter() {
+            setHasStableIds(true);
+        }
+
         public void setResults(List<Result> items) {
+            final ArrayList<Result> oldItems = new ArrayList<>(mItems);
+            final boolean oldEmptyState = mIsEmptyState;
+            final ArrayList<Result> newItems = new ArrayList<>(items);
+            final boolean newEmptyState = newItems.isEmpty();
+            DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+                @Override public int getOldListSize() { return oldEmptyState ? 1 : oldItems.size(); }
+                @Override public int getNewListSize() { return newEmptyState ? 1 : newItems.size(); }
+                @Override public boolean areItemsTheSame(int oldPosition, int newPosition) {
+                    if (oldEmptyState || newEmptyState) return oldEmptyState == newEmptyState;
+                    return oldItems.get(oldPosition).rowId == newItems.get(newPosition).rowId;
+                }
+                @Override public boolean areContentsTheSame(int oldPosition, int newPosition) {
+                    if (oldEmptyState || newEmptyState) return oldEmptyState == newEmptyState;
+                    return resultContentKey(oldItems.get(oldPosition)).equals(resultContentKey(newItems.get(newPosition)));
+                }
+            });
             mItems.clear();
-            if (items.isEmpty()) {
-                mIsEmptyState = true;
-            } else {
-                mIsEmptyState = false;
-                mItems.addAll(items);
-            }
-            notifyDataSetChanged();
+            mIsEmptyState = newEmptyState;
+            if (!newEmptyState) mItems.addAll(newItems);
+            diff.dispatchUpdatesTo(this);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return mIsEmptyState ? RecyclerView.NO_ID : mItems.get(position).rowId;
         }
 
         @Override
@@ -4091,21 +4924,25 @@ public class MainActivity extends Activity {
 
         @Override
         public ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
-            FrameLayout container = new FrameLayout(parent.getContext());
-            container.setLayoutParams(new RecyclerView.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT));
-            return new ViewHolder(container);
+            if (viewType == 0) {
+                FrameLayout container = new FrameLayout(parent.getContext());
+                container.setLayoutParams(new RecyclerView.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+                return new ViewHolder(container);
+            }
+            return new ResultViewHolder(createResultRowView(parent));
         }
 
         @Override
         public void onBindViewHolder(ViewHolder holder, int position) {
-            FrameLayout container = (FrameLayout) holder.itemView;
-            container.removeAllViews();
             if (mIsEmptyState) {
-                container.addView(emptyResultsView());
+                FrameLayout container = (FrameLayout) holder.itemView;
+                if (container.getChildCount() == 0) {
+                    container.addView(emptyResultsView());
+                }
             } else {
-                container.addView(resultView(mItems.get(position)));
+                ((ResultViewHolder) holder).bind(mItems.get(position));
             }
         }
 
@@ -4119,6 +4956,125 @@ public class MainActivity extends Activity {
                 super(itemView);
             }
         }
+
+        class ResultViewHolder extends ViewHolder {
+            final LinearLayout card;
+            final TextView top;
+            final TextView route;
+            final TextView tcpChip;
+            final TextView tlsChip;
+            final TextView httpChip;
+            final TextView cdnChip;
+            final TextView body;
+            final TextView tlsLine;
+            final TextView http3Line;
+            final TextView certLine;
+            final TextView reasonLine;
+
+            ResultViewHolder(View itemView) {
+                super(itemView);
+                card = (LinearLayout) itemView;
+                top = (TextView) card.getChildAt(0);
+                route = (TextView) card.getChildAt(1);
+                LinearLayout signal = (LinearLayout) card.getChildAt(2);
+                tcpChip = (TextView) signal.getChildAt(0);
+                tlsChip = (TextView) signal.getChildAt(1);
+                httpChip = (TextView) signal.getChildAt(2);
+                cdnChip = (TextView) signal.getChildAt(3);
+                body = (TextView) card.getChildAt(3);
+                tlsLine = (TextView) card.getChildAt(4);
+                http3Line = (TextView) card.getChildAt(5);
+                certLine = (TextView) card.getChildAt(6);
+                reasonLine = (TextView) card.getChildAt(7);
+            }
+
+            void bind(Result r) {
+                card.setPadding(dp(compactMode() ? 8 : 10), dp(compactMode() ? 5 : 8), dp(compactMode() ? 8 : 10), dp(compactMode() ? 5 : 8));
+                card.setBackground(glassBg(resultFillColor(r), r.working() ? Color.argb(145, 55, 212, 255) : Color.argb(95, 255, 255, 255)));
+                top.setText(r.address());
+                top.setTextSize(TypedValue.COMPLEX_UNIT_SP, compactMode() ? 13 : 15);
+                route.setText("Host hint " + dash(r.sni));
+                route.setTextSize(TypedValue.COMPLEX_UNIT_SP, compactMode() ? 11 : 12);
+                route.setTextColor(highContrastMode() ? Color.WHITE : Color.rgb(190, 218, 232));
+                bindStatusChip(tcpChip, "TCP", r.tcpPass, Color.rgb(54, 166, 255));
+                bindStatusChip(tlsChip, "TLS", r.tlsPass, Color.rgb(66, 230, 170));
+                bindStatusChip(httpChip, "HTTP", r.httpPass, Color.rgb(255, 204, 100));
+                bindStatusChip(cdnChip, r.cdn, !"UNKNOWN".equalsIgnoreCase(r.cdn), BLUE);
+                body.setText(latencySparkline(r) + "  " + r.totalLatency() + "ms | HTTP " + r.httpStatus + " | Q " + Math.round(r.quality));
+                bindOptionalLine(tlsLine, !compactMode() && !r.tlsVersion.isEmpty(), r.tlsVersion + " | " + r.tlsCipher + " | ALPN " + dash(r.alpn) + " | TLS " + dash(r.tlsProfile), highContrastMode() ? Color.WHITE : MUTED);
+                bindOptionalLine(http3Line, !compactMode() && r.http3Hint, "HTTP/3 advertised via Alt-Svc: " + trim(r.altSvc, 120), Color.rgb(150, 232, 255));
+                bindOptionalLine(certLine, !compactMode() && !r.tlsCert.isEmpty(), trim(r.tlsCert, 120), highContrastMode() ? Color.WHITE : MUTED);
+                bindOptionalLine(reasonLine, !r.reason.isEmpty(), r.reason, Color.rgb(255, 180, 180));
+                card.setOnClickListener(v -> copyOne(r));
+                card.setContentDescription(r.summary());
+            }
+        }
+    }
+
+    private LinearLayout createResultRowView(ViewGroup parent) {
+        LinearLayout card = column();
+        card.setPadding(dp(compactMode() ? 8 : 10), dp(compactMode() ? 5 : 8), dp(compactMode() ? 8 : 10), dp(compactMode() ? 5 : 8));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(0, dp(compactMode() ? 4 : 7), 0, 0);
+        card.setLayoutParams(lp);
+        TextView top = text("", compactMode() ? 13 : 15, Color.WHITE, true);
+        formatMonospace(top, compactMode() ? 13 : 15);
+        TextView route = text("", compactMode() ? 11 : 12, highContrastMode() ? Color.WHITE : Color.rgb(190, 218, 232), false);
+        route.setSingleLine(false);
+        LinearLayout signal = row();
+        signal.setGravity(Gravity.START);
+        signal.addView(statusDot("TCP", false, Color.rgb(54, 166, 255)), smallChipLp());
+        signal.addView(statusDot("TLS", false, Color.rgb(66, 230, 170)), smallChipLp());
+        signal.addView(statusDot("HTTP", false, Color.rgb(255, 204, 100)), smallChipLp());
+        signal.addView(statusDot("UNKNOWN", false, BLUE), smallChipLp());
+        TextView body = text("", 12, Color.WHITE, false);
+        formatMonospace(body, 12);
+        card.addView(top);
+        card.addView(route);
+        card.addView(signal);
+        card.addView(body);
+        card.addView(text("", 11, MUTED, false));
+        card.addView(text("", 11, Color.rgb(150, 232, 255), false));
+        card.addView(text("", 11, MUTED, false));
+        card.addView(text("", 11, Color.rgb(255, 180, 180), false));
+        return card;
+    }
+
+    private int resultFillColor(Result r) {
+        return r.httpPass ? Color.rgb(9, 48, 38) : r.tlsPass ? Color.rgb(16, 45, 37) :
+                r.tcpPass ? Color.rgb(43, 36, 16) : Color.rgb(37, 20, 28);
+    }
+
+    private void bindStatusChip(TextView v, String label, boolean on, int color) {
+        String safeLabel = label == null || label.trim().isEmpty() ? "UNKNOWN" : label;
+        String prefix = on ? "[on] " : "[off] ";
+        v.setText(prefix + safeLabel);
+        v.setTextSize(TypedValue.COMPLEX_UNIT_SP, compactMode() ? 10 : 11);
+        v.setTextColor(on ? Color.WHITE : (highContrastMode() ? Color.rgb(225, 235, 240) : MUTED));
+        int offFill = highContrastMode() ? Color.rgb(46, 58, 70) : Color.rgb(27, 38, 49);
+        int border = on ? Color.argb(210, 255, 255, 255) : Color.argb(highContrastMode() ? 145 : 70, 255, 255, 255);
+        v.setBackground(glassBg(on ? color : offFill, border));
+        v.setPadding(dp(compactMode() ? 5 : 7), dp(compactMode() ? 3 : 4), dp(compactMode() ? 5 : 7), dp(compactMode() ? 3 : 4));
+        v.setContentDescription(safeLabel + (on ? " passed" : " not passed"));
+    }
+
+    private void bindOptionalLine(TextView v, boolean visible, String value, int color) {
+        v.setVisibility(visible ? View.VISIBLE : View.GONE);
+        if (!visible) {
+            v.setText("");
+            return;
+        }
+        v.setText(value == null ? "" : value);
+        v.setTextColor(color);
+    }
+
+    private String resultContentKey(Result r) {
+        return r.target + "|" + r.ip + "|" + r.port + "|" + r.sni + "|" +
+                r.tcpPass + "|" + r.tlsPass + "|" + r.httpPass + "|" + r.httpStatus + "|" +
+                r.tcpLatencyMs + "|" + r.tlsLatencyMs + "|" + r.httpLatencyMs + "|" +
+                r.tlsVersion + "|" + r.tlsCipher + "|" + r.tlsCert + "|" + r.certFingerprint + "|" +
+                r.alpn + "|" + r.tlsProfile + "|" + r.altSvc + "|" + r.http3Hint + "|" +
+                r.reason + "|" + r.cdn + "|" + Math.round(r.quality * 100.0);
     }
 
 }

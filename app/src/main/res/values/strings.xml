@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">MaybeEdgeScanner</string>
-    <string name="widget_quick_scan_description">Start a default scan and open MaybeEdgeScanner.</string>
+    <string name="widget_quick_scan_description">Open MaybeEdgeScanner with the quick scan preset ready for review.</string>
 </resources>
