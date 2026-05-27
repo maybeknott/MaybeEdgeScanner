@@ -196,7 +196,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Download resolved Go module files
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: maybeedgescanner-go-sum
           path: go-sidecar
@@ -295,17 +295,17 @@ jobs:
         with:
           gradle-version: "8.14.2"
       - name: Download APK artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: maybeedgescanner-apks
           path: dist/apks
       - name: Download sidecar artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: maybeedgescanner-sidecars
           path: dist/sidecars
       - name: Download benchmark artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: maybeedgescanner-benchmarks
           path: dist/benchmarks
