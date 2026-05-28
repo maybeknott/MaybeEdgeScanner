@@ -4,14 +4,14 @@ final class RouteOptions {
     static final Option[] PROTOCOLS = options(
             "Use connected provider app", "external_vpn",
             "Local proxy", "local_proxy",
-            "Windscribe WireGuard", "wireguard",
+            "Windscribe app WireGuard", "wireguard",
             "OpenVPN UDP", "openvpn_udp",
             "OpenVPN TCP", "openvpn_tcp",
             "Plain TCP", "tcp",
             "Stealth", "stealth",
             "WebSocket tunnel", "wstunnel",
             "IKEv2", "ikev2",
-            "Psiphon supervised core", "tunnel_core_supervised",
+            "Psiphon app route", "tunnel_core_supervised",
             "External VPN APK", "external_vpn_apk");
 
     static final Option[] AUTH = options(
@@ -21,8 +21,8 @@ final class RouteOptions {
             "Credential reference", "credential_ref",
             "Auth-token reference", "auth_token_ref",
             "External SSO", "sso_external",
-            "Windscribe session reference", "wsnet_session_ref",
-            "Psiphon config reference", "config_ref");
+            "Windscribe app session reference", "wsnet_session_ref",
+            "Psiphon app config reference", "config_ref");
 
     static final Option[] DNS = options(
             "Use route default", "system_or_route_default",
@@ -30,24 +30,24 @@ final class RouteOptions {
             "Route DNS", "route_dns",
             "Control D", "ctrld",
             "Control D legacy", "control_d",
-            "Windscribe ROBERT", "robert",
+            "Windscribe app ROBERT", "robert",
             "DNS over HTTPS", "doh",
             "DNS over TLS", "dot",
             "Custom DNS reference", "custom_dns_ref",
             "No DNS override", "no_dns");
 
     static final Option[] SPLIT = options(
-            "Scanner app only", "scanner_app_only",
+            "Current network only", "scanner_app_only",
             "Include selected IPs", "include_targets",
             "Exclude selected IPs", "exclude_targets",
-            "Use provider VPN policy", "external_vpn_policy",
+            "Use installed app VPN policy", "external_vpn_policy",
             "Disabled", "disabled");
 
     static final Option[] UPSTREAM = options(
             "None", "none",
             "System proxy", "system_proxy",
             "Proxy reference", "proxy_ref",
-            "Direct", "direct",
+            "Current network", "direct",
             "Provider default", "provider_default");
 
     static final Option[] DOWNSTREAM = options(
@@ -66,7 +66,7 @@ final class RouteOptions {
             "Prefer Psiphon conduit", "conduit_first",
             "Psiphon conduit", "conduit",
             "CDN fronting", "cdn_fronting",
-            "Direct", "direct",
+            "Current network", "direct",
             "Profile default", "profile_default");
 
     static final Option[] CONDUIT = options(
@@ -76,10 +76,10 @@ final class RouteOptions {
 
     static final Option[] CHAIN = options(
             "None", "none",
-            "Psiphon over Windscribe", "psiphon_over_windscribe",
-            "Windscribe over Psiphon", "windscribe_over_psiphon",
-            "Proxy over Windscribe", "generic_proxy_over_windscribe",
-            "Windscribe over proxy", "windscribe_over_generic_proxy");
+            "Psiphon app over Windscribe app", "psiphon_over_windscribe",
+            "Windscribe app over Psiphon app", "windscribe_over_psiphon",
+            "Proxy over Windscribe app", "generic_proxy_over_windscribe",
+            "Windscribe app over proxy", "windscribe_over_generic_proxy");
 
     private RouteOptions() {}
 

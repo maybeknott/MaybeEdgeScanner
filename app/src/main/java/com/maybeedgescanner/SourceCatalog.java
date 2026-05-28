@@ -1,6 +1,7 @@
 package com.maybeedgescanner;
 
 import java.util.List;
+import java.util.Collection;
 import java.util.Set;
 
 final class SourceCatalog {
@@ -28,29 +29,30 @@ final class SourceCatalog {
         List<String> lines(String asset);
         Set<String> tokens(String asset);
         Set<String> communityEdges(String ipAsset, String cidrAsset);
+        int estimatedIps(Collection<String> entries);
     }
 
     static int communityTotal(Loader loader) {
-        return loader.lines(DEFAULT_TARGETS).size()
-                + loader.lines(DEFAULT_EDGES_EXTRA).size()
-                + loader.communityEdges(MAYBEPSIPHON_EDGE_IPS, COMMUNITY_EDGE_CIDRS_24).size();
+        return loader.estimatedIps(loader.lines(DEFAULT_TARGETS))
+                + loader.estimatedIps(loader.lines(DEFAULT_EDGES_EXTRA))
+                + loader.estimatedIps(loader.communityEdges(MAYBEPSIPHON_EDGE_IPS, COMMUNITY_EDGE_CIDRS_24));
     }
 
     static int akamaiTotal(Loader loader) {
-        return loader.tokens(AKAMAI_AS20940).size()
-                + loader.lines(AKAMAI_HOSTS_184X).size();
+        return loader.estimatedIps(loader.tokens(AKAMAI_AS20940))
+                + loader.estimatedIps(loader.lines(AKAMAI_HOSTS_184X));
     }
 
     static int cloudfrontTotal(Loader loader) {
-        return loader.tokens(AWS_CLOUDFRONT_RANGES).size();
+        return loader.estimatedIps(loader.tokens(AWS_CLOUDFRONT_RANGES));
     }
 
     static int fastlyTotal(Loader loader) {
-        return loader.tokens(FASTLY_AS54113).size();
+        return loader.estimatedIps(loader.tokens(FASTLY_AS54113));
     }
 
     static int cloudflareTotal(Loader loader) {
-        return loader.tokens(CLOUDFLARE_RANGES).size();
+        return loader.estimatedIps(loader.tokens(CLOUDFLARE_RANGES));
     }
 
     static int otherCdnTotal(Loader loader) {
@@ -63,7 +65,7 @@ final class SourceCatalog {
                 STACKPATH_EDGIO_RANGES,
                 OTHER_CLOUD_RANGES
         }) {
-            total += loader.tokens(asset).size();
+            total += loader.estimatedIps(loader.tokens(asset));
         }
         return total;
     }
