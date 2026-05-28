@@ -1,6 +1,6 @@
 # MaybeEdgeScanner
 
-MaybeEdgeScanner is an Android network scanner focused on route-pairing workflows (target endpoint + SNI route behavior), with an optional Go sidecar for higher-throughput scans and export/observability workflows.
+MaybeEdgeScanner is an Android network scanner focused on route-pairing workflows (target IP + SNI route behavior), with an optional Go sidecar for higher-throughput scans and export/observability workflows.
 
 ## What It Does
 
@@ -12,7 +12,7 @@ MaybeEdgeScanner is an Android network scanner focused on route-pairing workflow
 ## Project Scope
 
 - This repo is the **route-pairing** scanner product.
-- Route plugins are validated and attached as scan metadata; full route tunnel attachment remains runtime-limited.
+- Windscribe, Psiphon, and local-proxy routes are integrated as external provider routes: the app opens/observes provider state, keeps provider credentials inside the provider apps, and attaches route status to scans.
 - If you only need target-first scanning without route pairing, use the sibling project: `MaybeScanner`.
 
 ## Repository Layout
@@ -30,7 +30,7 @@ MaybeEdgeScanner/
 From repository root:
 
 ```powershell
-.\gradlew.bat --no-daemon :app:lintUniversalDebug :app:assembleDebug
+.\gradlew.bat --no-daemon :app:lintUniversalDebug :app:assembleUniversalDebug
 ```
 
 From `go-sidecar/`:

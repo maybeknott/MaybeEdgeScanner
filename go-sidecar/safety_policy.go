@@ -62,7 +62,7 @@ func safetyPolicyObservation(req scanRequest, targetCount int) SafetyPolicyObser
 		ProviderClassificationAuthorizes: false,
 	}
 	if req.SafetyPreset == safetyPresetLegacyCompat && !req.RespectSafety {
-		obs.Warnings = append(obs.Warnings, "Legacy compatibility mode: reserved/special range filtering is not forced unless respect_safety is true.")
+		obs.Warnings = append(obs.Warnings, "Compatibility policy: reserved/special range filtering is not forced unless respect_safety is true.")
 	}
 	if req.RatePerSecond == 0 {
 		obs.Warnings = append(obs.Warnings, "No effective rate limit is configured.")

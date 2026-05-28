@@ -22,7 +22,7 @@ graph TD
 
 ### 1.1 Symmetrical Coexistence & Sibling Architecture
 MaybeEdgeScanner maintains strict behavioral and layout symmetry with its sibling project, **MaybeScanner**, sharing identical layouts, diagnostic modules, and platform boundaries. The single intentional difference lies in the scanning target mapping:
-* **MaybeEdgeScanner** is the route-pairing sibling for SNI-heavy edge tests. It keeps target endpoints and SNI routes as separate scan-shaping inputs so users can test primary-route behavior or expand across all bundled/custom SNI hosts.
+* **MaybeEdgeScanner** is the route-pairing sibling for SNI-heavy edge tests. It keeps target IPs/hosts and SNI routes as separate scan-shaping inputs so users can test primary-route behavior or expand across all bundled/custom SNI hosts.
 * **MaybeScanner** is an IP-first target scanner. It directly audits target IPs or domains. SNIs extracted from certificates during handshakes are logged as host hints.
 
 ---
@@ -133,7 +133,7 @@ The companion Go sidecar includes a robust suite of defenses:
   ```go
   _ = conn.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
   ```
-* **Adaptive Backoff Scoping**: Binds the error ring-buffer *outside* of individual scanning batch loops. This preserves accurate, long-term latency contexts and protects upstream endpoints from load spikes.
+* **Adaptive Backoff Scoping**: Binds the error ring-buffer *outside* of individual scanning batch loops. This preserves accurate, long-term latency contexts and protects upstream services from load spikes.
 
 ---
 

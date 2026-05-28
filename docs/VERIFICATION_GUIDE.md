@@ -31,10 +31,10 @@ Run from repository root:
 ```bash
 gradle --no-daemon :app:lintUniversalDebug
 gradle --no-daemon :app:testUniversalDebugUnitTest
-gradle --no-daemon :app:assembleDebug
+gradle --no-daemon :app:assembleUniversalDebug
 ```
 
-`assembleDebug` produces `armv7`, `armv8`, and `universal` debug artifacts under `app/build/outputs/apk/`.
+`assembleUniversalDebug` produces the universal debug APK under `app/build/outputs/apk/universal/debug/`. ABI-flavored debug artifacts are available through the Gradle variant tasks when a device-specific package is needed.
 
 ## 4. Shared Contract Verification
 
