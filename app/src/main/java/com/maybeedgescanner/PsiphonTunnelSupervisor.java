@@ -128,16 +128,37 @@ final class PsiphonTunnelSupervisor {
         boolean beastMode;
 
         String summary() {
-            return "Route readiness: Psiphon\n" +
-                    "state=" + state + " mode=" + mode + "\n" +
-                    "strategy=" + routeStrategy + " conduit=" + conduitMode +
-                    " fronting=" + (frontingPolicy == null || frontingPolicy.isEmpty() ? "--" : frontingPolicy) +
-                    " beast=" + beastMode + "\n" +
-                    "chain=" + providerChain + " lanShare=" + shareProxyOnLan + "\n" +
-                    "configRefPresent=" + configRefPresent + " package=" + (packageName == null || packageName.isEmpty() ? "--" : packageName) + "\n" +
-                    "socksPort=" + (socksPort > 0 ? socksPort : 0) + " httpProxyPort=" + (httpProxyPort > 0 ? httpProxyPort : 0) +
-                    (lastNotice == null || lastNotice.isEmpty() ? "" : "\nlastNotice=" + lastNotice) +
-                    (errorCode == null || errorCode.isEmpty() ? "" : "\nerror=" + errorCode);
+            return "Psiphon route status\n" +
+                    "Status: " + displayState(state) + "\n" +
+                    "Mode: " + display(mode) + " | strategy " + display(routeStrategy) + " | conduit " + display(conduitMode) + "\n" +
+                    "Config: " + (configRefPresent ? "config reference present" : "needs config reference") +
+                    " | external package " + display(packageName) + "\n" +
+                    "Fronting: " + display(frontingPolicy) + " | chain " + display(providerChain) +
+                    " | LAN share " + yesNo(shareProxyOnLan) + " | aggressive mode " + yesNo(beastMode) + "\n" +
+                    "Local proxy: SOCKS " + (socksPort > 0 ? socksPort : "--") +
+                    " | HTTP " + (httpProxyPort > 0 ? httpProxyPort : "--") +
+                    (lastNotice == null || lastNotice.isEmpty() ? "" : "\nLast notice: " + lastNotice) +
+                    (errorCode == null || errorCode.isEmpty() ? "" : "\nIssue: " + errorCode);
+        }
+
+        private static String displayState(String state) {
+            if ("external_vpn_observation".equals(state)) return "ready to observe the external Psiphon route";
+            if ("needs_profile_or_package".equals(state)) return "enter a profile ref or package name for the external Psiphon app";
+            if ("needs_tunnel_core_process".equals(state)) return "config reference present; tunnel-core process is not started here";
+            if ("needs_config_ref".equals(state)) return "enter a Psiphon config reference first";
+            if ("proxy_listening".equals(state)) return "local proxy is listening";
+            if ("starting".equals(state)) return "starting";
+            if ("failed".equals(state)) return "failed";
+            if ("already_running".equals(state)) return "already running";
+            return display(state);
+        }
+
+        private static String yesNo(boolean value) {
+            return value ? "yes" : "no";
+        }
+
+        private static String display(String value) {
+            return value == null || value.trim().isEmpty() ? "--" : value.trim();
         }
     }
 }

@@ -13,8 +13,11 @@ def releaseSigningFromEnv = System.getenv('RELEASE_STORE_FILE') &&
     System.getenv('RELEASE_KEY_ALIAS') &&
     System.getenv('RELEASE_KEY_PASSWORD')
 def hasAnyReleaseSigning = hasReleaseSigning || releaseSigningFromEnv
-def baseVersionCode = (findProperty('APP_BASE_VERSION_CODE') ?: '20260519').toInteger()
-def defaultVersionName = (findProperty('APP_VERSION_NAME') ?: '1.1.0').toString()
+def explicitBaseVersionCode = findProperty('APP_BASE_VERSION_CODE')
+def explicitVersionName = findProperty('APP_VERSION_NAME')
+def versionPropsExplicit = explicitBaseVersionCode && explicitVersionName
+def baseVersionCode = (explicitBaseVersionCode ?: '20260528').toInteger()
+def defaultVersionName = (explicitVersionName ?: '1.2.0').toString()
 def ciRunNumber = System.getenv('GITHUB_RUN_NUMBER')
 def resolvedVersionCode = (System.getenv('ANDROID_VERSION_CODE') ?: (ciRunNumber ? "${baseVersionCode + ciRunNumber.toInteger()}" : "${baseVersionCode}")).toInteger()
 def resolvedVersionName = System.getenv('ANDROID_VERSION_NAME') ?: defaultVersionName
@@ -86,7 +89,8 @@ android {
     applicationVariants.configureEach { variant ->
         variant.outputs.configureEach { output ->
             def abiName = variant.flavorName ?: 'universal'
-            output.outputFileName = "MaybeEdgeScanner-${abiName}-${variant.buildType.name}.apk"
+            def safeVersionName = resolvedVersionName.replaceAll(/[^A-Za-z0-9._-]/, '_')
+            output.outputFileName = "MaybeEdgeScanner-${abiName}-${variant.buildType.name}-v${safeVersionName}-${resolvedVersionCode}.apk"
         }
     }
 
@@ -102,7 +106,14 @@ android {
 }
 
 gradle.taskGraph.whenReady { taskGraph ->
-    if (taskGraph.allTasks.any { it.name.toLowerCase().contains('release') } && !hasAnyReleaseSigning) {
+    def releaseRequested = taskGraph.allTasks.any { it.name.toLowerCase().contains('release') }
+    if (releaseRequested && !versionPropsExplicit) {
+        throw new GradleException('Release version must be manually updated and committed in gradle.properties before building a release.')
+    }
+    if (releaseRequested && !(resolvedVersionName ==~ /\d+\.\d+\.\d+([.-][A-Za-z0-9]+)?/)) {
+        throw new GradleException('Release version must be an explicit semantic version in gradle.properties, for example 1.2.0.')
+    }
+    if (releaseRequested && !hasAnyReleaseSigning) {
         throw new GradleException('Release signing is required. Provide signing.properties or RELEASE_* environment variables.')
     }
 }

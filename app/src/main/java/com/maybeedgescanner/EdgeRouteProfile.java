@@ -89,10 +89,17 @@ final class EdgeRouteProfile implements Serializable {
 
     String summary() {
         if (!enabled) return "direct";
-        return pluginId + "/" + protocolMode + " binding=" + routeBinding +
-                " strategy=" + routeStrategy + " chain=" + providerChain +
-                " auth=" + authMode + " dns=" + dnsPolicy + " split=" + splitTunnel +
-                " down=" + downstreamMode + " lan=" + shareProxyOnLan;
+        String provider = pluginId == null || pluginId.isEmpty() ? "local proxy" : pluginId;
+        return provider + " route status, mode " + display(protocolMode) +
+                ", binding " + display(routeBinding) +
+                ", strategy " + display(routeStrategy) +
+                ", chain " + display(providerChain) +
+                ", DNS " + display(dnsPolicy) +
+                ", LAN share " + (shareProxyOnLan ? "on" : "off");
+    }
+
+    private static String display(String value) {
+        return value == null || value.trim().isEmpty() ? "--" : value.trim();
     }
 
     private static void putIfNotEmpty(JSONObject object, String key, String value) throws Exception {

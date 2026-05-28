@@ -81,16 +81,26 @@ final class WindscribeRouteObserver {
         List<String> dnsServers = new ArrayList<>();
 
         String summary() {
-            return "Route readiness: Windscribe\n" +
-                    "state=" + (ready ? "ready-for-metadata/observer" : "needs profile/session/app route") + "\n" +
-                    "protocol=" + protocolMode + " binding=" + routeBinding + "\n" +
-                    "auth=" + authBoundary + "\n" +
-                    "strategy=" + routeStrategy + " chain=" + providerChain + " lanShare=" + shareProxyOnLan + "\n" +
-                    "dns=" + dnsPolicy + " observedResolvers=" + dnsServers + "\n" +
-                    "split=" + splitTunnel + " upstream=" + upstreamMode + " downstream=" + downstreamMode + "\n" +
-                    "vpnObserved=" + vpnObserved + " localProxyObserved=" + localProxyObserved +
+            return "Windscribe route status\n" +
+                    "Status: " + (ready ? "ready to attach to scan" : "connect Windscribe, enter a profile/session ref, or provide a local proxy") + "\n" +
+                    "Observed path: VPN " + yesNo(vpnObserved) + " | local proxy " + yesNo(localProxyObserved) +
+                    " | profile ref " + yesNo(profileBacked) + " | session ref " + yesNo(sessionBacked) + "\n" +
+                    "Mode: " + display(protocolMode) + " | binding " + display(routeBinding) + "\n" +
+                    "Auth boundary: " + authBoundary + "\n" +
+                    "DNS: " + display(dnsPolicy) + " | observed resolvers " + dnsServers + "\n" +
+                    "Policy: split " + display(splitTunnel) + " | strategy " + display(routeStrategy) +
+                    " | chain " + display(providerChain) + " | LAN share " + yesNo(shareProxyOnLan) + "\n" +
+                    "Direction: upstream " + display(upstreamMode) + " | downstream " + display(downstreamMode) +
                     (interfaceName == null || interfaceName.isEmpty() ? "" : " iface=" + interfaceName) +
-                    (error == null || error.isEmpty() ? "" : "\nobserverError=" + error);
+                    (error == null || error.isEmpty() ? "" : "\nObserver issue: " + error);
+        }
+
+        private static String yesNo(boolean value) {
+            return value ? "yes" : "no";
+        }
+
+        private static String display(String value) {
+            return value == null || value.trim().isEmpty() ? "--" : value.trim();
         }
     }
 }

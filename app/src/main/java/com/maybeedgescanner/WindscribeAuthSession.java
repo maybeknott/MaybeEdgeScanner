@@ -22,8 +22,8 @@ final class WindscribeAuthSession implements Serializable {
     }
 
     String authBoundary() {
-        if (sessionRefAvailable) return "Android owns Windscribe session ref; Go receives credential_ref only.";
-        return "Login/session not configured. Use Windscribe app, SSO, auth-token ref, or stored wsnet session ref.";
+        if (sessionRefAvailable) return "Windscribe stays external; this scan attaches only a stored session/profile reference.";
+        return "Connect Windscribe first or enter a stored session/profile reference. No Windscribe password is collected here.";
     }
 
     private static String cleanRef(String value) {
