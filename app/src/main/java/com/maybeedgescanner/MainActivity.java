@@ -3630,6 +3630,7 @@ public class MainActivity extends Activity {
         String routeId = "", routeProviderId = "", routeBinding = "", routeProtocolMode = "", routeAuthMode = "", routeDnsPolicy = "", routeReadiness = "";
         final java.util.ArrayList<PhaseResult> phaseResults = new java.util.ArrayList<>();
         String finalPhase = "", errorCode = "";
+        TargetPlanRecord targetPlan;
         boolean http3Hint;
         double quality;
 
@@ -3641,6 +3642,10 @@ public class MainActivity extends Activity {
             r.reason = reason;
             r.recordPhase(PhaseResult.failure("dns", 0, null, "DNS_RESOLUTION_FAILED"));
             return r.finish();
+        }
+        Result attachTargetPlan(TargetPlanRecord plan) {
+            this.targetPlan = plan;
+            return this;
         }
         Result withRoute(EdgeRouteProfile route) {
             if (route == null || !route.enabled) return this;
@@ -3830,6 +3835,11 @@ public class MainActivity extends Activity {
                 org.json.JSONArray phases = new org.json.JSONArray();
                 for (PhaseResult phase : phaseResults) phases.put(phase.toJson());
                 o.put("phase_results", phases);
+            }
+            if (targetPlan != null) {
+                o.put("target_plan", targetPlan.toJson());
+                o.put("plan_id", targetPlan.planId());
+                o.put("result_correlation_id", targetPlan.correlationId());
             }
             return o;
         }

@@ -78,7 +78,9 @@ final class ScanWorkflowEngine implements ScanWorkflowRunner {
         EdgeRouteProfile routeProfile = spec.routeProfile;
         if (ips.isEmpty()) {
             addResult(generation,
-                    MainActivity.Result.down(target, "", 0, "", "dns_failed").withRoute(routeProfile),
+                    MainActivity.Result.down(target, "", 0, "", "dns_failed")
+                            .attachTargetPlan(TargetPlanRecord.forRoutePairingProbe(target, "", 0, "", spec.sniPairingEnabled, routeProfile))
+                            .withRoute(routeProfile),
                     spec.suppressNoisyLogs);
             return;
         }
@@ -87,6 +89,7 @@ final class ScanWorkflowEngine implements ScanWorkflowRunner {
             for (int port : spec.ports) {
                 if (profile == 0) {
                     MainActivity.Result base = new MainActivity.Result(target, ip, port, "");
+                    base.attachTargetPlan(TargetPlanRecord.forRoutePairingProbe(target, ip, port, "", spec.sniPairingEnabled, routeProfile));
                     base.tcp(spec.timeout);
                     addResult(generation, base.withRoute(routeProfile).finish(), spec.suppressNoisyLogs);
                     continue;
@@ -98,6 +101,7 @@ final class ScanWorkflowEngine implements ScanWorkflowRunner {
                     if (!session.shouldContinue(generation)) return;
                     String routeSni = sni == null ? "" : sni.trim();
                     MainActivity.Result result = new MainActivity.Result(target, ip, port, routeSni);
+                    result.attachTargetPlan(TargetPlanRecord.forRoutePairingProbe(target, ip, port, routeSni, spec.sniPairingEnabled, routeProfile));
                     result.tls(spec.timeout, spec.tlsMode);
                     if (profile >= 2 && result.tlsPass) result.http(spec.timeout, spec.httpPath, spec.tlsMode);
                     addResult(generation, result.withRoute(routeProfile).finish(), spec.suppressNoisyLogs);

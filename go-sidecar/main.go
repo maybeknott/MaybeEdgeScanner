@@ -1025,7 +1025,12 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 				res.TLSFingerprint = fingerprint
 				res.CertSubject = tlsInfo.Subject
 				res.NetworkClassification = detectNetworkClassification(ip, candidateSNI, tlsInfo.Subject)
-				phases = append(phases, newPhaseSuccess("tcp", elapsed), newPhaseSuccess("tls", elapsed))
+				phases = append(phases, newPhaseSuccess("tcp", elapsed))
+				if strings.TrimSpace(candidateSNI) != "" && !tlsInfo.Verified {
+					phases = append(phases, newPhaseFailure("tls", fmt.Errorf("hostname verification failed"), elapsed, "TLS_VERIFY_HOSTNAME_MISMATCH"))
+				} else {
+					phases = append(phases, newPhaseSuccess("tls", elapsed))
+				}
 				if req.HTTPProbe {
 					httpStart := time.Now()
 					res.HTTP, res.HTTPStatus, res.ServerHeader, res.CacheHeader, res.AltSvc, res.HTTP3Hint, res.HTTPProbeCode = probeHTTPOverNegotiatedALPN(ctx, conn, ip, candidateSNI, req.HTTPPath, req.TimeoutMS, tlsInfo.ALPN)
