@@ -1,0 +1,155 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+)
+
+// PhaseResult is the v1 per-phase probe outcome carried on scan NDJSON results.
+type PhaseResult struct {
+	Phase      string         `json:"phase"`
+	Status     string         `json:"status"`
+	DurationMS int64          `json:"duration_ms"`
+	ErrorCode  string         `json:"error_code,omitempty"`
+	Retryable  bool           `json:"retryable"`
+	Evidence   map[string]any `json:"evidence,omitempty"`
+}
+
+func newPhaseSuccess(phase string, durationMS int64) PhaseResult {
+	return PhaseResult{
+		Phase:      phase,
+		Status:     "success",
+		DurationMS: durationMS,
+		Retryable:  false,
+		Evidence:   map[string]any{},
+	}
+}
+
+func newPhaseFailure(phase string, err error, durationMS int64, errorCode string) PhaseResult {
+	code := strings.TrimSpace(errorCode)
+	if code == "" && err != nil {
+		code = classifyNetworkError(err, phase)
+	}
+	return PhaseResult{
+		Phase:      phase,
+		Status:     phaseStatusFromCode(code, err),
+		DurationMS: durationMS,
+		ErrorCode:  code,
+		Retryable:  phaseRetryable(code),
+		Evidence:   boundedPhaseEvidence(err),
+	}
+}
+
+func phaseStatusFromCode(code string, err error) string {
+	if code == "" && err == nil {
+		return "success"
+	}
+	upper := strings.ToUpper(code)
+	switch {
+	case strings.HasSuffix(upper, "_TIMEOUT"):
+		return "timeout"
+	case strings.HasSuffix(upper, "_REFUSED"):
+		return "refused"
+	case strings.HasSuffix(upper, "_RESET"):
+		return "reset"
+	case strings.Contains(upper, "_SKIPPED"), strings.HasSuffix(upper, "_EXCLUDED"):
+		return "skipped"
+	case strings.Contains(upper, "_UNSUPPORTED"):
+		return "unsupported"
+	case strings.HasSuffix(upper, "_CANCELLED"):
+		return "cancelled"
+	default:
+		return "failed"
+	}
+}
+
+func phaseRetryable(code string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(code))
+	switch {
+	case strings.HasSuffix(upper, "_TIMEOUT"):
+		return true
+	case strings.HasSuffix(upper, "_RESET"):
+		return true
+	case upper == "DNS_TRUNCATED_TCP_RETRY_FAILED":
+		return true
+	default:
+		return false
+	}
+}
+
+func boundedPhaseEvidence(err error) map[string]any {
+	if err == nil {
+		return nil
+	}
+	detail := redactSensitiveString(err.Error())
+	if len(detail) > 200 {
+		detail = detail[:200]
+	}
+	return map[string]any{"detail": detail}
+}
+
+func httpPhaseFromALPN(alpn string) string {
+	if strings.Contains(strings.ToLower(alpn), "h2") {
+		return "http2"
+	}
+	return "http1"
+}
+
+func finalizeFinalPhase(res result, phases []PhaseResult, lastErrCode string) string {
+	if res.HTTP {
+		return httpPhaseFromALPN(res.ALPN)
+	}
+	if res.TLS {
+		return "tls"
+	}
+	if res.TCP {
+		return "tcp"
+	}
+	for i := len(phases) - 1; i >= 0; i-- {
+		if phases[i].Status != "success" && phases[i].Status != "skipped" {
+			return phases[i].Phase
+		}
+	}
+	if lastErrCode != "" {
+		return "tcp"
+	}
+	return ""
+}
+
+func resultIndicatesTimeout(res result) bool {
+	for _, phase := range res.PhaseResults {
+		if phase.Status == "timeout" {
+			return true
+		}
+	}
+	return strings.HasSuffix(res.ErrorCode, "_TIMEOUT")
+}
+
+func resultIndicatesReset(res result) bool {
+	for _, phase := range res.PhaseResults {
+		if phase.Status == "reset" {
+			return true
+		}
+	}
+	return strings.HasSuffix(res.ErrorCode, "_RESET")
+}
+
+func buildRoutePhaseResult(res result) (PhaseResult, bool) {
+	code := strings.TrimSpace(res.RouteErrorCode)
+	if code != "" {
+		return newPhaseFailure("route", fmt.Errorf("%s", code), 0, code), true
+	}
+	if res.RouteObserved && res.RouteUsed {
+		return newPhaseSuccess("route", 0), true
+	}
+	if res.RouteObserved && !res.RouteUsed {
+		return PhaseResult{
+			Phase:      "route",
+			Status:     "failed",
+			ErrorCode:  firstNonEmpty(res.RouteMismatchCode, "ROUTE_OBSERVATION_FAILED"),
+			Retryable:  false,
+			Evidence:   map[string]any{"route_evidence_state": res.RouteEvidenceState},
+		}, true
+	}
+	return PhaseResult{}, false
+}

@@ -110,6 +110,8 @@ type result struct {
 	Score                 int    `json:"score"`
 	ErrorCode             string `json:"error_code,omitempty"`
 	Error                 string `json:"error,omitempty"`
+	FinalPhase            string        `json:"final_phase,omitempty"`
+	PhaseResults          []PhaseResult `json:"phase_results,omitempty"`
 	BatchNumber           int    `json:"batch_number"`
 }
 
@@ -546,10 +548,10 @@ func scan(w http.ResponseWriter, r *http.Request) {
 			if res.TCP {
 				metricTCPPass.Add(1)
 			}
-			if strings.HasSuffix(res.ErrorCode, "_TIMEOUT") || strings.Contains(strings.ToLower(res.Error), "timeout") {
+			if resultIndicatesTimeout(res) {
 				metricTimeouts.Add(1)
 			}
-			if strings.HasSuffix(res.ErrorCode, "_RESET") || strings.Contains(strings.ToLower(res.Error), "reset") {
+			if resultIndicatesReset(res) {
 				metricResets.Add(1)
 			}
 			if res.Error != "" {
@@ -962,13 +964,18 @@ func (r *scanRequest) normalize() {
 func probe(ctx context.Context, target string, port int, req scanRequest, batchNo int, routePlan scanRoutePlan) result {
 	res := result{Target: target, Port: port, BatchNumber: batchNo, NetworkClassification: "unknown"}
 	routePlan.ApplyRequestedToResult(&res)
+	var phases []PhaseResult
+	dnsStart := time.Now()
 	ips, sni, err := resolveTargetCandidates(target)
 	if len(ips) > 0 {
 		res.IP = ips[0]
 	}
 	res.SNI = sni
 	if err != nil {
-		res.ErrorCode = "DNS_RESOLUTION_FAILED"
+		dnsPhase := newPhaseFailure("dns", err, time.Since(dnsStart).Milliseconds(), "DNS_RESOLUTION_FAILED")
+		res.PhaseResults = []PhaseResult{dnsPhase}
+		res.FinalPhase = "dns"
+		res.ErrorCode = dnsPhase.ErrorCode
 		res.Error = err.Error()
 		return res
 	}
@@ -1003,10 +1010,12 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 			if tlsErr != nil {
 				lastErr = tlsErr
 				lastErrCode = classifyNetworkError(tlsErr, "tls")
+				phases = append(phases, newPhaseFailure("tls", tlsErr, time.Since(start).Milliseconds(), lastErrCode))
 			}
 			if tlsOK {
+				elapsed := time.Since(start).Milliseconds()
 				res.TCP = true
-				res.LatencyMS = time.Since(start).Milliseconds()
+				res.LatencyMS = elapsed
 				res.TLS = true
 				res.SNI = candidateSNI
 				res.TLSVersion = tlsInfo.Version
@@ -1016,8 +1025,17 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 				res.TLSFingerprint = fingerprint
 				res.CertSubject = tlsInfo.Subject
 				res.NetworkClassification = detectNetworkClassification(ip, candidateSNI, tlsInfo.Subject)
+				phases = append(phases, newPhaseSuccess("tcp", elapsed), newPhaseSuccess("tls", elapsed))
 				if req.HTTPProbe {
+					httpStart := time.Now()
 					res.HTTP, res.HTTPStatus, res.ServerHeader, res.CacheHeader, res.AltSvc, res.HTTP3Hint, res.HTTPProbeCode = probeHTTPOverNegotiatedALPN(ctx, conn, ip, candidateSNI, req.HTTPPath, req.TimeoutMS, tlsInfo.ALPN)
+					httpPhase := httpPhaseFromALPN(tlsInfo.ALPN)
+					httpMs := time.Since(httpStart).Milliseconds()
+					if res.HTTP {
+						phases = append(phases, newPhaseSuccess(httpPhase, httpMs))
+					} else if strings.TrimSpace(res.HTTPProbeCode) != "" {
+						phases = append(phases, newPhaseFailure(httpPhase, fmt.Errorf("%s", res.HTTPProbeCode), httpMs, res.HTTPProbeCode))
+					}
 				}
 				_ = conn.Close()
 				break
@@ -1027,12 +1045,16 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 			res.TCP = true
 		}
 		if !res.TLS && tlsAttempted && !anyTCPOK {
-			start := time.Now()
+			tcpStart := time.Now()
 			res.TCP, err = tcpWithError(ctx, ip, port, req.TimeoutMS, routePlan, &observedRoute)
-			res.LatencyMS = time.Since(start).Milliseconds()
+			tcpMs := time.Since(tcpStart).Milliseconds()
+			res.LatencyMS = tcpMs
 			if err != nil {
 				lastErr = err
 				lastErrCode = classifyNetworkError(err, "tcp")
+				phases = append(phases, newPhaseFailure("tcp", err, tcpMs, lastErrCode))
+			} else {
+				phases = append(phases, newPhaseSuccess("tcp", tcpMs))
 			}
 		}
 		if res.TLS || res.TCP {
@@ -1049,6 +1071,14 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 		} else {
 			routePlan.ApplyRouteNotObserved(&res)
 		}
+		if routePhase, ok := buildRoutePhaseResult(res); ok {
+			phases = append(phases, routePhase)
+		}
+	}
+	res.PhaseResults = phases
+	res.FinalPhase = finalizeFinalPhase(res, phases, lastErrCode)
+	if routePlan.Valid && strings.TrimSpace(res.RouteErrorCode) != "" && res.FinalPhase == "" {
+		res.FinalPhase = "route"
 	}
 	res.Score = score(res)
 	return res
