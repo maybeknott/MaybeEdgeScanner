@@ -36,10 +36,10 @@ MaybeEdgeScanner organizes its capabilities into a clean, modern **Three-Tab Gla
 ```
 
 ### Tab 1: Sources
-This is your scanning command center:
-* **Pre-flight Presets**: Select from a robust list of global CDNs (Cloudflare, Akamai, Fastly, AWS CloudFront, etc.) to target.
-* **Managed Sampling Horizontal Scrubbers**: Use the slider to select an exact sample count from each preset. Setting the slider to `0` will load the complete preset.
-* **SNI Route-Pairing Mode**:
+This is your scanning command center. The default path is **explicit targets first**, then optional route pairing:
+* **Manual targets (default)**: Paste or import IPs, hostnames, CIDRs, or ranges. Scanning does not start with an empty target list.
+* **Optional managed presets (Advanced)**: Collapsed source sets (including CDN-oriented corpora) are explicit-budget gated. They are not selected by default and do not replace your target list.
+* **SNI route-pairing mode**:
   - *Target SNI Input*: Manual entry for specific SNI hosts to pair with the targets.
   - *Multi-SNI Checkbox*: Toggles between checking only the primary target domain or expanding probes across all bundled and custom SNI host configurations.
   - *External Route Providers*: Windscribe, Psiphon, and local-proxy routes are launched or observed from MaybeEdgeScanner while credentials and VPN sessions stay inside the provider apps. Scan results include route status so you can compare direct, VPN, and proxy behavior.
@@ -81,11 +81,23 @@ The manual targets text area in `Sources` accepts complex inputs. You can combin
 
 ## 4. Setting up Scan Profiles
 
-MaybeEdgeScanner supports four core auditing profiles:
-1. **Quick TCP**: Measures basic port reachability and latency. Extremely fast, ideal for checking general uptime.
-2. **Standard TLS**: Performs complete TLS handshakes, extracts certificate chain observations (issuer/SAN/CN when available), and cipher-suite details.
-3. **Deep HTTP**: Upgrades the TCP/TLS probe to send a full `HEAD` request, verifying remote HTTP responses, server headers, and ALPN flags.
-4. **Verify CDN Edge**: Checks CDN identity, cache headers, and provider evidence.
+Core profiles (available from Sources / check toggles):
+1. **Quick TCP**: Port reachability and latency.
+2. **Standard TLS**: TLS handshake and certificate observation (issuer/SAN when available).
+3. **Deep HTTP**: `HEAD` request after TLS; HTTP status, headers, and ALPN.
+
+**Advanced / lab-only** (not default onboarding):
+- **CDN edge verification** and provider-classification filters belong in Advanced mode. They annotate results; they do not prove a named VPN route was used unless route evidence fields show `route_used`.
+
+## 4.1 What route validation does and does not prove
+
+**Proves (when tests pass):**
+- Selected SOCKS5/HTTP CONNECT/local-proxy listeners are reachable and used by the route-aware dialer for probes.
+- Requested vs observed route IDs are recorded; mismatches surface structured route errors.
+
+**Does not prove:**
+- Full Psiphon/Windscribe/external-VPN lifecycle on device (observer-only states may be shown without `route_used`).
+- CDN identity, account login, or carrier policy outside the probe path.
 
 ---
 

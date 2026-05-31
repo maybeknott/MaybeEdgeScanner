@@ -103,4 +103,38 @@ final class PhaseResult {
         }
         return "http1";
     }
+
+    static String displayLabel(String errorCode, String phase, String status) {
+        if (errorCode != null && !errorCode.isEmpty()) {
+            return humanizeCode(errorCode);
+        }
+        if ("success".equals(status)) {
+            return capitalize(phase) + " ok";
+        }
+        if (phase != null && !phase.isEmpty()) {
+            return capitalize(phase) + " " + (status == null || status.isEmpty() ? "failed" : status);
+        }
+        return "";
+    }
+
+    String displayLabel() {
+        return displayLabel(errorCode, phase, status);
+    }
+
+    private static String humanizeCode(String code) {
+        String[] parts = code.toLowerCase(Locale.US).split("_");
+        StringBuilder sb = new StringBuilder();
+        for (String part : parts) {
+            if (part.isEmpty()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(Character.toUpperCase(part.charAt(0)));
+            if (part.length() > 1) sb.append(part.substring(1));
+        }
+        return sb.toString();
+    }
+
+    private static String capitalize(String value) {
+        if (value == null || value.isEmpty()) return "";
+        return Character.toUpperCase(value.charAt(0)) + value.substring(1);
+    }
 }

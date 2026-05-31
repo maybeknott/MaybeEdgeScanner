@@ -1,18 +1,18 @@
-# MaybeEdgeScanner Go Sidecar
+# MaybeScanner Go Sidecar
 
-The sidecar is a standalone HTTP service for higher-volume edge and DNS scans. It has no Python dependency and can run directly on a workstation, VPS, container host, or CI worker.
+The sidecar is a standalone HTTP service for higher-volume target and DNS scans. It has no Python dependency and can run directly on a workstation, VPS, container host, or CI worker.
 
 ## What It Provides
 
 - Browser dashboard at `/`.
-- Streaming edge scans over newline-delimited JSON.
+- Streaming target-first scans over newline-delimited JSON.
 - Standards-based DNS scans using `github.com/miekg/dns`.
 - IPv4 and IPv6 target parsing.
 - ALPN validation for `h2` and `http/1.1`.
 - uTLS ClientHello fingerprint selection and rotation for Chrome, Firefox, iOS, and randomized TLS probes.
 - Alt-Svc HTTP/3 hint capture from HTTP probe responses.
 - TLS certificate and HTTP header metadata capture.
-- CDN classification hints.
+- Best-effort provider/network classification hints.
 - Randomized target ordering, pacing, and jitter controls.
 - Bundled safety-prefix loading from `assets/do_not_scan_cidrs.txt`.
 - Strict CIDR expansion limits to avoid accidental whole-internet or huge-subnet expansion.
@@ -39,7 +39,7 @@ Build a local binary:
 
 ```powershell
 go test ./...
-go build -trimpath -ldflags='-s -w' -o maybeedgescanner-sidecar.exe .
+go build -trimpath -ldflags='-s -w' -o maybescanner-sidecar.exe .
 ```
 
 ## Docker
@@ -67,16 +67,25 @@ That image is cached with BuildKit `gha` and registry layers so dependency downl
 - `GET /health` returns process health, goroutine count, and heap bytes.
 - `GET /metrics` returns Prometheus-style metrics.
 - `GET /grafana-dashboard.json` returns the bundled Grafana dashboard.
-- `POST /api/scan` streams NDJSON edge results.
+- `POST /api/scan` streams NDJSON scan results.
 - `POST /api/dns` streams NDJSON DNS resolver results.
 - `POST /api/stop` requests graceful cancellation/shutdown.
 - `POST /api/export/nmap` returns Nmap XML for compatible tooling.
 
-## Edge Scan Request
+## Scan Request
 
-`POST /api/scan` accepts JSON with targets, SNIs, ports, HTTP path, worker count, timeout, optional pacing controls, and `tls_fingerprint`. Valid fingerprint values are `rotate`, `chrome`, `firefox`, `ios`, `randomized`, and `randomized-no-alpn`. Results stream as each target is processed, which keeps memory use predictable during large scans.
+`POST /api/scan` accepts JSON with targets, ports, HTTP path, worker count, timeout, optional pacing controls, and `tls_fingerprint`. Valid fingerprint values are `rotate`, `chrome`, `firefox`, `ios`, `randomized`, and `randomized-no-alpn`. Literal IP scans do not receive a default SNI; hostname-derived names are used only when present in the target plan or explicitly requested. Results stream as each target is processed, which keeps memory use predictable during large scans.
 
-Typical result fields include target, IP, port, SNI, TCP status, TLS status, HTTP status, latency, ALPN, selected TLS fingerprint, Alt-Svc and HTTP/3 hints, certificate subject/issuer/SAN values, server headers, CDN hint, and score.
+Empty scan requests are rejected with a structured target-selection error instead of falling back to bundled public targets.
+
+### NDJSON stream shape (scan and DNS)
+
+- `init` records include `expansion` with `submitted_tokens`, `expanded_targets`, and `safety_skipped` when CIDR/range expansion runs.
+- Each scan `result` record may include `phase_results[]`, `final_phase`, and top-level `error_code`. Phases cover DNS resolution failure, TCP connect, TLS handshake, and HTTP/1 or HTTP/2 probes (from ALPN).
+- Each DNS `result` record includes the same `phase_results` / `final_phase` fields summarizing UDP/TCP resolver attempts plus stable `error_code` values.
+- Public HTTP errors use the structured envelope documented in `public_api_errors.go` (`error_code`, `message`, `status`, `phase`, `retryable`, `request_id`, redacted `details`).
+
+Typical result fields include target, IP, port, SNI mode/name where applicable, TCP status, TLS status, HTTP status, latency, ALPN, selected TLS fingerprint, Alt-Svc and HTTP/3 hints, certificate subject/issuer/SAN values, server headers, best-effort network classification, and score.
 
 ## DNS Scan Request
 
@@ -103,7 +112,7 @@ Prometheus scrape target:
 
 ```yaml
 scrape_configs:
-  - job_name: maybeedgescanner-sidecar
+  - job_name: maybescanner-sidecar
     static_configs:
       - targets: ["127.0.0.1:10808"]
 ```
@@ -118,7 +127,7 @@ Dashboard panels include scan throughput, HTTP/TLS pass rates, timeout/reset rat
 
 ## Support
 
-Project repository: [MaybeEdgeScanner](https://github.com/maybeknott/MaybeEdgeScanner/)
+Project repository: [MaybeScanner](https://github.com/maybeknott/MaybeScanner/)
 
 Optional support for ongoing development:
 

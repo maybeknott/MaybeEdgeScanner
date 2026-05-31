@@ -3387,7 +3387,8 @@ public class MainActivity extends Activity {
         if (!compactMode() && !r.routeProviderId.isEmpty()) card.addView(text("Route " + r.routeProviderId + " | " + r.routeBinding + " | " + r.routeProtocolMode + " | DNS " + r.routeDnsPolicy, 11, Color.rgb(175, 230, 215), false));
         if (!compactMode() && r.http3Hint) card.addView(text("HTTP/3 advertised via Alt-Svc: " + trim(r.altSvc, 120), 11, Color.rgb(150, 232, 255), false));
         if (!compactMode() && !r.tlsCert.isEmpty()) card.addView(text(trim(r.tlsCert, 120), 11, highContrastMode() ? Color.WHITE : MUTED, false));
-        if (!r.reason.isEmpty()) card.addView(text(r.reason, 11, Color.rgb(255, 180, 180), false));
+        String failureLabel = resultFailureLabel(r);
+        if (!failureLabel.isEmpty()) card.addView(text(failureLabel, 11, Color.rgb(255, 180, 180), false));
         card.setOnClickListener(v -> copyOne(r));
         card.setContentDescription(r.summary());
         return card;
@@ -3562,6 +3563,21 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             stableHistoryPanel.addView(text("History unavailable", 11, MUTED, false));
         }
+    }
+
+    static String resultFailureLabel(Result r) {
+        if (r == null) return "";
+        if (r.errorCode != null && !r.errorCode.isEmpty()) {
+            return PhaseResult.displayLabel(r.errorCode, r.finalPhase, "");
+        }
+        for (int i = r.phaseResults.size() - 1; i >= 0; i--) {
+            PhaseResult phase = r.phaseResults.get(i);
+            if (phase != null && !"success".equals(phase.status) && !"skipped".equals(phase.status)) {
+                String label = phase.displayLabel();
+                if (!label.isEmpty()) return label;
+            }
+        }
+        return r.reason == null ? "" : r.reason;
     }
 
     private Stats stats() {
@@ -5405,7 +5421,8 @@ public class MainActivity extends Activity {
                 bindOptionalLine(tlsLine, !compactMode() && !r.tlsVersion.isEmpty(), r.tlsVersion + " | " + r.tlsCipher + " | ALPN " + dash(r.alpn) + " | TLS " + dash(r.tlsProfile), highContrastMode() ? Color.WHITE : MUTED);
                 bindOptionalLine(http3Line, !compactMode() && r.http3Hint, "HTTP/3 advertised via Alt-Svc: " + trim(r.altSvc, 120), Color.rgb(150, 232, 255));
                 bindOptionalLine(certLine, !compactMode() && !r.tlsCert.isEmpty(), trim(r.tlsCert, 120), highContrastMode() ? Color.WHITE : MUTED);
-                bindOptionalLine(reasonLine, !r.reason.isEmpty(), r.reason, Color.rgb(255, 180, 180));
+                String failureLabel = resultFailureLabel(r);
+                bindOptionalLine(reasonLine, !failureLabel.isEmpty(), failureLabel, Color.rgb(255, 180, 180));
                 card.setOnClickListener(v -> copyOne(r));
                 card.setContentDescription(r.summary());
             }

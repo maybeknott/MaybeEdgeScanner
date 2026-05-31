@@ -53,6 +53,8 @@ type dnsResult struct {
 	Health         int            `json:"health"`
 	ErrorCode      string         `json:"error_code,omitempty"`
 	Error          string         `json:"error,omitempty"`
+	PhaseResults   []PhaseResult  `json:"phase_results,omitempty"`
+	FinalPhase     string         `json:"final_phase,omitempty"`
 }
 
 type dnsTTLRecord struct {
@@ -224,6 +226,7 @@ func (r *dnsScanRequest) normalize() {
 
 func runDNSQuery(ctx context.Context, job dnsJob, timeoutMS int) dnsResult {
 	res := dnsResult{Resolver: job.resolver, Domain: job.domain, QType: job.qtype, Protocol: "udp", Vendor: dnsVendor(job.resolver)}
+	defer finalizeDNSPhaseResults(&res)
 	qtype := dns.StringToType[strings.ToUpper(job.qtype)]
 	if qtype == 0 {
 		res.Error = "unsupported query type"
@@ -292,6 +295,48 @@ func runDNSQuery(ctx context.Context, job dnsJob, timeoutMS int) dnsResult {
 	}
 	res.Health = scoreDNS(res)
 	return res
+}
+
+func finalizeDNSPhaseResults(res *dnsResult) {
+	phases := make([]PhaseResult, 0, len(res.Attempts)+1)
+	for _, att := range res.Attempts {
+		duration := int64(0)
+		if att.LatencyMS != nil {
+			duration = *att.LatencyMS
+		}
+		code := strings.TrimSpace(att.ErrorCode)
+		if code == "" && att.Error != "" {
+			code = classifyDNSError(errors.New(att.Error))
+		}
+		if att.Outcome == "success" && code == "" {
+			phases = append(phases, newPhaseSuccess("dns", duration))
+			continue
+		}
+		if code == "" {
+			code = "DNS_FAILED"
+		}
+		phases = append(phases, newPhaseFailure("dns", errors.New(att.Error), duration, code))
+	}
+	if len(phases) == 0 {
+		if res.ErrorCode == "" {
+			phases = append(phases, newPhaseSuccess("dns", res.LatencyMS))
+		} else {
+			phases = append(phases, newPhaseFailure("dns", errors.New(res.Error), res.LatencyMS, res.ErrorCode))
+		}
+	} else if res.ErrorCode != "" {
+		last := phases[len(phases)-1]
+		if last.Status == "success" {
+			phases = append(phases, newPhaseFailure("dns", errors.New(res.Error), res.LatencyMS, res.ErrorCode))
+		}
+	}
+	res.PhaseResults = phases
+	res.FinalPhase = "dns"
+	for i := len(phases) - 1; i >= 0; i-- {
+		if phases[i].Status != "success" && phases[i].Status != "skipped" {
+			res.FinalPhase = phases[i].Phase
+			return
+		}
+	}
 }
 
 type parsedDNS struct {
