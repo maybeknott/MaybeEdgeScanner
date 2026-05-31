@@ -1,5 +1,7 @@
 package com.maybeedgescanner;
 
+import android.content.pm.ActivityInfo;
+
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 
@@ -39,6 +41,19 @@ public class B4UiEvidenceCaptureTest {
                 UiEvidenceCapture.clickTabLabel(activity, "Routes");
                 UiEvidenceCapture.capture(activity, "04_plan_review_routes");
             });
+        }
+    }
+
+    @Test
+    public void captureRotationAndRecreate() throws Exception {
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity ->
+                    activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE));
+            UiEvidenceCapture.settle(400);
+            scenario.onActivity(activity -> UiEvidenceCapture.capture(activity, "05_landscape_routes"));
+            scenario.recreate();
+            UiEvidenceCapture.settle(400);
+            scenario.onActivity(activity -> UiEvidenceCapture.capture(activity, "06_after_recreate"));
         }
     }
 }

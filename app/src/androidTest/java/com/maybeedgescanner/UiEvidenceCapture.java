@@ -52,6 +52,20 @@ final class UiEvidenceCapture {
         return out;
     }
 
+    static void settle(long animationMs) {
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        if (animationMs <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(animationMs);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while waiting for UI settle", interrupted);
+        }
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+    }
+
     static void clickTabLabel(Activity activity, String label) {
         activity.runOnUiThread(() -> {
             View root = activity.getWindow().getDecorView();
@@ -61,7 +75,7 @@ final class UiEvidenceCapture {
             }
             button.performClick();
         });
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        settle(200);
     }
 
     private static Button findButton(View root, String text) {
