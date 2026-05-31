@@ -49,6 +49,7 @@ final class ScanSessionController {
     private volatile WeakReference<MainActivity> uiHost = new WeakReference<>(null);
     private volatile Context appContext;
     private volatile boolean planReviewPending;
+    private volatile boolean processContinuityChecked;
 
     private ScanSessionController() {}
 
@@ -216,11 +217,13 @@ final class ScanSessionController {
         invalidateGeneration();
         planReviewPending = false;
         recordTerminalReason(ScanTerminalReason.CLEARED);
+        ScanProcessContinuityStore.markTerminal(applicationContext());
     }
 
     void attachApplicationContext(Context context) {
         if (context != null) {
             appContext = context.getApplicationContext();
+            reconcileProcessContinuity(appContext);
         }
     }
 
@@ -318,6 +321,7 @@ final class ScanSessionController {
         if (!stopRequested) markScanFullyChecked();
         Context context = applicationContext();
         ScanForegroundService.finishSession(terminalReason.lifecycleState);
+        ScanProcessContinuityStore.markTerminal(context);
         if (context != null) {
             int progress = totalTargets <= 0 ? 0
                     : (int) Math.min(100, Math.round((checkedChecks() * 100.0) / totalTargets));
@@ -429,6 +433,20 @@ final class ScanSessionController {
         if (active != null) {
             active.shutdownNow();
         }
+    }
+
+    private void reconcileProcessContinuity(Context context) {
+        if (processContinuityChecked || context == null || isRunning()) return;
+        processContinuityChecked = true;
+        ScanProcessContinuityStore.AbandonedSession abandoned =
+                ScanProcessContinuityStore.consumeAbandonedSession(context);
+        if (abandoned == null) return;
+        requestStop();
+        recordTerminalReason(ScanTerminalReason.PROCESS_LOST);
+        totalTargets = abandoned.plannedChecks;
+        scanStartedAt = abandoned.startedAtEpochMs;
+        ScanForegroundService.restoreProcessLostSession(abandoned);
+        notifyUiObservers();
     }
 
     void onActivityDestroy(MainActivity activity, boolean isChangingConfigurations, boolean isFinishing) {

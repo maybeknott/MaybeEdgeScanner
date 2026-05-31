@@ -47,6 +47,7 @@ final class ScanSessionStager {
                 request.ports.size(),
                 request.threads,
                 request.workflowLabel);
+        ScanProcessContinuityStore.markActive(context, generation, request.plannedChecks, request.workflowLabel);
         ScanForegroundService.start(context, "planning",
                 "0 / " + request.plannedChecks + " checks", 0);
         session.notifyUiObservers();

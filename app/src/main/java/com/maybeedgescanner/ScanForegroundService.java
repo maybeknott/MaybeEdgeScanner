@@ -72,6 +72,24 @@ public class ScanForegroundService extends Service {
         SESSION.set(current.withProgress(current.completedChecks, state == null ? "idle" : state, System.currentTimeMillis()));
     }
 
+    static void restoreProcessLostSession(ScanProcessContinuityStore.AbandonedSession abandoned) {
+        if (abandoned == null) return;
+        SESSION.set(new ScanSessionSnapshot(
+                abandoned.generation <= 0 ? "" : "scan-" + abandoned.generation,
+                abandoned.generation,
+                abandoned.plannedChecks,
+                0,
+                0,
+                0,
+                0,
+                abandoned.workflow,
+                "process_lost",
+                abandoned.startedAtEpochMs,
+                System.currentTimeMillis()
+        ));
+        SNAPSHOT.set(new ScanLifecycleSnapshot("process_lost", abandoned.detail(), 0));
+    }
+
     public static RouteSessionSnapshot routeSnapshot() {
         return ROUTE_SNAPSHOT.get();
     }
@@ -166,6 +184,7 @@ public class ScanForegroundService extends Service {
         if (ACTION_STOP.equals(action)) {
             applySnapshot("idle", extra(intent, EXTRA_DETAIL, "Scan inactive"), 0);
             finishSession("idle");
+            ScanProcessContinuityStore.markTerminal(getApplicationContext());
             releaseWakeLock();
             stopForeground(true);
             stopSelf(startId);
@@ -243,6 +262,7 @@ public class ScanForegroundService extends Service {
                 ScanSessionController.get().performClearSession();
                 applySnapshot("idle", "Scan cleared", 0);
                 finishSession("idle");
+                ScanProcessContinuityStore.markTerminal(getApplicationContext());
                 releaseWakeLock();
                 stopForeground(true);
                 ScanSessionController.get().notifyUiObservers();
