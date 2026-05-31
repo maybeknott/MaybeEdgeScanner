@@ -31,6 +31,7 @@ func TestPublicAPIErrorEnvelopeParity(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}))
+	mux.HandleFunc("/grafana-dashboard.json", grafanaDashboard)
 
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -50,6 +51,7 @@ func TestPublicAPIErrorEnvelopeParity(t *testing.T) {
 		{name: "scan method guard", method: http.MethodGet, path: "/api/scan", wantStatus: http.StatusMethodNotAllowed, wantError: "METHOD_NOT_ALLOWED", wantContains: `"required_method":"POST"`},
 		{name: "scan unauthorized", method: http.MethodPost, path: "/api/scan", wantStatus: http.StatusUnauthorized, wantError: "LOCAL_API_UNAUTHORIZED"},
 		{name: "scan bad request", method: http.MethodPost, path: "/api/scan", body: "{", useAuth: true, wantStatus: http.StatusBadRequest, wantError: "BAD_REQUEST"},
+		{name: "grafana dashboard bundled", method: http.MethodGet, path: "/grafana-dashboard.json", wantStatus: http.StatusOK, wantContains: `"title":`},
 		{name: "dns method guard", method: http.MethodGet, path: "/api/dns", wantStatus: http.StatusMethodNotAllowed, wantError: "METHOD_NOT_ALLOWED", wantContains: `"required_method":"POST"`},
 		{name: "dns unauthorized", method: http.MethodPost, path: "/api/dns", wantStatus: http.StatusUnauthorized, wantError: "LOCAL_API_UNAUTHORIZED"},
 		{name: "dns bad request", method: http.MethodPost, path: "/api/dns", body: "{", useAuth: true, wantStatus: http.StatusBadRequest, wantError: "BAD_REQUEST"},
@@ -107,6 +109,13 @@ func TestPublicAPIErrorEnvelopeParity(t *testing.T) {
 			}
 			if tc.wantContains != "" && !strings.Contains(body, tc.wantContains) {
 				t.Fatalf("expected body to contain %q, got %s", tc.wantContains, body)
+			}
+			if tc.wantError != "" {
+				for _, key := range []string{`"error_code"`, `"message"`, `"status":"error"`, `"phase"`, `"retryable"`} {
+					if !strings.Contains(body, key) {
+						t.Fatalf("expected envelope field %s in body=%s", key, body)
+					}
+				}
 			}
 		})
 	}

@@ -653,40 +653,15 @@ func writePluginValidationError(w http.ResponseWriter, code, field, message stri
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"schema_version": 1,
+		"schema_version": sidecarAPIVersion,
 		"valid":          false,
+		"status":         "error",
+		"phase":          publicErrorPhase(code),
+		"retryable":      false,
 		"error_code":     code,
 		"field":          field,
 		"message":        message,
 	})
-}
-
-func writePublicBadRequest(w http.ResponseWriter, message string) {
-	writePublicError(w, http.StatusBadRequest, "BAD_REQUEST", message, nil)
-}
-
-func writeScanInputError(w http.ResponseWriter, code, message string, details map[string]any) {
-	writePublicError(w, http.StatusBadRequest, code, message, details)
-}
-
-func writePublicMethodNotAllowed(w http.ResponseWriter, requiredMethod string) {
-	writePublicError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed", map[string]any{
-		"required_method": requiredMethod,
-	})
-}
-
-func writePublicError(w http.ResponseWriter, status int, code, message string, details map[string]any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	payload := map[string]any{
-		"schema_version": 1,
-		"error_code":     code,
-		"message":        message,
-	}
-	for key, value := range details {
-		payload[key] = value
-	}
-	_ = json.NewEncoder(w).Encode(payload)
 }
 
 type scanRoutePlan struct {

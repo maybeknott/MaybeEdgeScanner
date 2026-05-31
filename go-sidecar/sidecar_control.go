@@ -101,11 +101,11 @@ func (cp *sidecarControlPlane) stateString() string {
 func (cp *sidecarControlPlane) requireMutationAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			writePublicMethodNotAllowed(w, http.MethodPost)
+			writePublicMethodNotAllowedForRequest(w, r, http.MethodPost)
 			return
 		}
 		if !cp.authorized(r) {
-			writePublicError(w, http.StatusUnauthorized, "LOCAL_API_UNAUTHORIZED", "unauthorized sidecar control request", nil)
+			writePublicErrorForRequest(w, r, http.StatusUnauthorized, "LOCAL_API_UNAUTHORIZED", "unauthorized sidecar control request", nil)
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, defaultRequestBodySize)
@@ -116,11 +116,11 @@ func (cp *sidecarControlPlane) requireMutationAuth(next http.HandlerFunc) http.H
 func (cp *sidecarControlPlane) requireReadAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			writePublicMethodNotAllowed(w, http.MethodGet)
+			writePublicMethodNotAllowedForRequest(w, r, http.MethodGet)
 			return
 		}
 		if !cp.authorized(r) {
-			writePublicError(w, http.StatusUnauthorized, "LOCAL_API_UNAUTHORIZED", "unauthorized sidecar read request", nil)
+			writePublicErrorForRequest(w, r, http.StatusUnauthorized, "LOCAL_API_UNAUTHORIZED", "unauthorized sidecar read request", nil)
 			return
 		}
 		next(w, r)
