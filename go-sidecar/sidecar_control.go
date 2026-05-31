@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"runtime"
@@ -24,6 +26,7 @@ const (
 
 type sidecarControlPlane struct {
 	token       string
+	tokenHash   [32]byte
 	startedAt   time.Time
 	nonce       string
 	state       atomic.Value
@@ -50,22 +53,31 @@ type heartbeatPayload struct {
 	SourceRevision       string `json:"source_revision,omitempty"`
 }
 
-func newSidecarControlPlane() *sidecarControlPlane {
+func newSidecarControlPlane() (*sidecarControlPlane, error) {
 	token := strings.TrimSpace(os.Getenv("MAYBEEDGESCANNER_SIDECAR_TOKEN"))
 	if token == "" {
 		token = strings.TrimSpace(os.Getenv("MAYBESCANNER_SIDECAR_TOKEN"))
 	}
 	if token == "" {
-		token = randomHex(32)
+		generatedToken, err := randomHex(32)
+		if err != nil {
+			return nil, fmt.Errorf("sidecar token generation failed: %w", err)
+		}
+		token = generatedToken
+	}
+	nonce, err := randomHex(16)
+	if err != nil {
+		return nil, fmt.Errorf("sidecar nonce generation failed: %w", err)
 	}
 	cp := &sidecarControlPlane{
 		token:     token,
+		tokenHash: sha256.Sum256([]byte(token)),
 		startedAt: time.Now(),
-		nonce:     randomHex(16),
+		nonce:     nonce,
 	}
 	cp.state.Store("idle")
 	cp.lastBeatNS.Store(time.Now().UnixNano())
-	return cp
+	return cp, nil
 }
 
 func (cp *sidecarControlPlane) setShutdown(fn func(context.Context) error) {
@@ -89,14 +101,28 @@ func (cp *sidecarControlPlane) stateString() string {
 func (cp *sidecarControlPlane) requireMutationAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			writePublicMethodNotAllowed(w, http.MethodPost)
 			return
 		}
 		if !cp.authorized(r) {
-			http.Error(w, "unauthorized sidecar control request", http.StatusUnauthorized)
+			writePublicError(w, http.StatusUnauthorized, "LOCAL_API_UNAUTHORIZED", "unauthorized sidecar control request", nil)
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, defaultRequestBodySize)
+		next(w, r)
+	}
+}
+
+func (cp *sidecarControlPlane) requireReadAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writePublicMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if !cp.authorized(r) {
+			writePublicError(w, http.StatusUnauthorized, "LOCAL_API_UNAUTHORIZED", "unauthorized sidecar read request", nil)
+			return
+		}
 		next(w, r)
 	}
 }
@@ -115,9 +141,10 @@ func (cp *sidecarControlPlane) authorized(r *http.Request) bool {
 		}
 	}
 	if auth == "" {
-		auth = strings.TrimSpace(r.URL.Query().Get("token"))
+		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(auth), []byte(cp.token)) == 1
+	candidateHash := sha256.Sum256([]byte(auth))
+	return subtle.ConstantTimeCompare(candidateHash[:], cp.tokenHash[:]) == 1
 }
 
 func (cp *sidecarControlPlane) setBrowserCookie(w http.ResponseWriter) {
@@ -204,10 +231,10 @@ func (cp *sidecarControlPlane) shutdown(w http.ResponseWriter, _ *http.Request) 
 	}
 }
 
-func randomHex(bytesLen int) string {
+func randomHex(bytesLen int) (string, error) {
 	buf := make([]byte, bytesLen)
 	if _, err := rand.Read(buf); err != nil {
-		return hex.EncodeToString([]byte(time.Now().Format(time.RFC3339Nano)))
+		return "", err
 	}
-	return hex.EncodeToString(buf)
+	return hex.EncodeToString(buf), nil
 }

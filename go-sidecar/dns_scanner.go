@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,20 +30,44 @@ type dnsScanRequest struct {
 }
 
 type dnsResult struct {
-	Resolver      string   `json:"resolver"`
-	Domain        string   `json:"domain"`
-	QType         string   `json:"qtype"`
-	Protocol      string   `json:"protocol"`
-	Answers       []string `json:"answers"`
-	LatencyMS     int64    `json:"latency_ms"`
-	RCode         int      `json:"rcode"`
-	Recursive     bool     `json:"recursive"`
-	Authoritative bool     `json:"authoritative"`
-	DNSSEC        bool     `json:"dnssec"`
-	EDNS          bool     `json:"edns"`
-	Vendor        string   `json:"vendor"`
-	Health        int      `json:"health"`
-	Error         string   `json:"error,omitempty"`
+	Resolver       string         `json:"resolver"`
+	Domain         string         `json:"domain"`
+	QType          string         `json:"qtype"`
+	Protocol       string         `json:"protocol"`
+	Answers        []string       `json:"answers"`
+	CNAMEChain     []string       `json:"cname_chain,omitempty"`
+	CNAMELoop      bool           `json:"cname_loop,omitempty"`
+	TTLMin         *uint32        `json:"ttl_min,omitempty"`
+	TTLRecords     []dnsTTLRecord `json:"ttl_records,omitempty"`
+	LatencyMS      int64          `json:"latency_ms"`
+	RCode          int            `json:"rcode"`
+	Recursive      bool           `json:"recursive"`
+	Authoritative  bool           `json:"authoritative"`
+	DNSSEC         bool           `json:"dnssec"`
+	EDNS           bool           `json:"edns"`
+	Truncated      bool           `json:"truncated"`
+	RetriedOverTCP bool           `json:"retried_over_tcp"`
+	Attempts       []dnsAttempt   `json:"attempts,omitempty"`
+	RawSize        int            `json:"raw_size,omitempty"`
+	Vendor         string         `json:"vendor"`
+	Health         int            `json:"health"`
+	ErrorCode      string         `json:"error_code,omitempty"`
+	Error          string         `json:"error,omitempty"`
+}
+
+type dnsTTLRecord struct {
+	Name  string `json:"name"`
+	RType string `json:"rtype"`
+	TTL   uint32 `json:"ttl"`
+}
+
+type dnsAttempt struct {
+	Transport string `json:"transport"`
+	Outcome   string `json:"outcome"`
+	Truncated bool   `json:"truncated"`
+	LatencyMS *int64 `json:"latency_ms,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 type dnsJob struct {
@@ -51,17 +77,13 @@ type dnsJob struct {
 }
 
 const (
-	maxDNSRequestTimeoutMS  = 120000
-	maxDNSRequestWorkers    = 8192
-	maxDNSRequestSamples    = 1024
-	maxDNSRequestRatePerSec = 200000
-	maxDNSRequestJitterMS   = 60000
+	maxCNAMEChainDepth = 16
 )
 
 func scanDNS(w http.ResponseWriter, r *http.Request) {
 	var serial uint64
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		writePublicMethodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if activeControlPlane != nil {
@@ -71,10 +93,6 @@ func scanDNS(w http.ResponseWriter, r *http.Request) {
 	var req dnsScanRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writePublicBadRequest(w, "invalid dns scan request body")
-		return
-	}
-	if err := req.validateCaps(); err != nil {
-		writePublicBadRequest(w, "dns request exceeds sidecar safety limits")
 		return
 	}
 	metricDNSRuns.Add(1)
@@ -204,74 +222,91 @@ func (r *dnsScanRequest) normalize() {
 	}
 }
 
-func (r dnsScanRequest) validateCaps() error {
-	if r.TimeoutMS > maxDNSRequestTimeoutMS {
-		return fmt.Errorf("timeout exceeds sidecar cap")
-	}
-	if r.Workers > maxDNSRequestWorkers {
-		return fmt.Errorf("workers exceeds sidecar cap")
-	}
-	if r.Samples > maxDNSRequestSamples {
-		return fmt.Errorf("samples exceeds sidecar cap")
-	}
-	if r.RatePerSecond > maxDNSRequestRatePerSec {
-		return fmt.Errorf("rate exceeds sidecar cap")
-	}
-	if r.JitterMS > maxDNSRequestJitterMS {
-		return fmt.Errorf("jitter exceeds sidecar cap")
-	}
-	return nil
-}
-
 func runDNSQuery(ctx context.Context, job dnsJob, timeoutMS int) dnsResult {
 	res := dnsResult{Resolver: job.resolver, Domain: job.domain, QType: job.qtype, Protocol: "udp", Vendor: dnsVendor(job.resolver)}
 	qtype := dns.StringToType[strings.ToUpper(job.qtype)]
 	if qtype == 0 {
 		res.Error = "unsupported query type"
+		res.ErrorCode = "DNS_FAILED"
 		return res
 	}
 	msg := new(dns.Msg)
 	msg.SetQuestion(dns.Fqdn(job.domain), qtype)
 	msg.RecursionDesired = true
 	msg.SetEdns0(4096, true)
-	client := &dns.Client{
-		Net:     "udp",
-		Timeout: time.Duration(timeoutMS) * time.Millisecond,
-		Dialer: &net.Dialer{
-			LocalAddr: &net.UDPAddr{IP: net.IPv4zero, Port: 0},
-			Timeout:   time.Duration(timeoutMS) * time.Millisecond,
-		},
-	}
-	in, rtt, err := client.ExchangeContext(ctx, msg, job.resolver)
+	in, rtt, err := exchangeDNS(ctx, msg, job.resolver, "udp", timeoutMS)
+	res.Attempts = append(res.Attempts, dnsAttemptFromExchange("udp", in, rtt, err))
 	if ctx.Err() != nil {
 		res.Error = ctx.Err().Error()
+		res.ErrorCode = classifyDNSError(ctx.Err())
 		res.Health = scoreDNS(res)
 		return res
 	}
 	res.LatencyMS = rtt.Milliseconds()
 	if err != nil {
 		res.Error = err.Error()
+		res.ErrorCode = classifyDNSError(err)
 		res.Health = scoreDNS(res)
 		return res
 	}
+	if in != nil && in.Truncated {
+		res.Truncated = true
+		res.RetriedOverTCP = true
+		tcpIn, tcpRTT, tcpErr := exchangeDNS(ctx, msg, job.resolver, "tcp", timeoutMS)
+		res.Attempts = append(res.Attempts, dnsAttemptFromExchange("tcp", tcpIn, tcpRTT, tcpErr))
+		if ctx.Err() != nil {
+			res.Error = ctx.Err().Error()
+			res.ErrorCode = classifyDNSError(ctx.Err())
+			res.Health = scoreDNS(res)
+			return res
+		}
+		if tcpErr == nil && tcpIn != nil {
+			in = tcpIn
+			res.Protocol = "tcp"
+			res.LatencyMS += tcpRTT.Milliseconds()
+			res.Error = ""
+			res.ErrorCode = ""
+		} else if tcpErr != nil {
+			res.Error = tcpErr.Error()
+			res.ErrorCode = "DNS_TRUNCATED_RETRY_FAILED"
+		}
+	}
 	parsed := parseDNSMessage(in)
 	res.Answers = parsed.answers
+	res.CNAMEChain = parsed.cnameChain
+	res.CNAMELoop = parsed.cnameLoop
+	res.TTLMin = parsed.ttlMin
+	res.TTLRecords = parsed.ttlRecords
 	res.RCode = parsed.rcode
 	res.Recursive = parsed.ra
 	res.Authoritative = parsed.aa
 	res.DNSSEC = parsed.ad
 	res.EDNS = parsed.edns
+	res.RawSize = parsed.rawSize
+	res.Truncated = res.Truncated || parsed.truncated
+	if res.ErrorCode == "" {
+		res.ErrorCode = dnsRCodeErrorCode(res.RCode, len(res.Answers))
+	}
+	if parsed.cnameLoop {
+		res.ErrorCode = "DNS_CNAME_LOOP"
+	}
 	res.Health = scoreDNS(res)
 	return res
 }
 
 type parsedDNS struct {
-	answers []string
-	rcode   int
-	ra      bool
-	aa      bool
-	ad      bool
-	edns    bool
+	answers    []string
+	cnameChain []string
+	cnameLoop  bool
+	ttlMin     *uint32
+	ttlRecords []dnsTTLRecord
+	rcode      int
+	ra         bool
+	aa         bool
+	ad         bool
+	edns       bool
+	truncated  bool
+	rawSize    int
 }
 
 func parseDNSMessage(msg *dns.Msg) parsedDNS {
@@ -283,14 +318,20 @@ func parseDNSMessage(msg *dns.Msg) parsedDNS {
 	out.ra = msg.RecursionAvailable
 	out.aa = msg.Authoritative
 	out.ad = msg.AuthenticatedData
+	out.truncated = msg.Truncated
+	out.rawSize = msg.Len()
+	cnames := make(map[string]string)
 	for _, rr := range msg.Answer {
+		recordTTL(&out, rr.Header())
 		switch v := rr.(type) {
 		case *dns.A:
 			out.answers = append(out.answers, v.A.String())
 		case *dns.AAAA:
 			out.answers = append(out.answers, v.AAAA.String())
 		case *dns.CNAME:
-			out.answers = append(out.answers, strings.TrimSuffix(v.Target, "."))
+			target := strings.TrimSuffix(v.Target, ".")
+			out.answers = append(out.answers, target)
+			cnames[strings.TrimSuffix(v.Hdr.Name, ".")] = target
 		case *dns.NS:
 			out.answers = append(out.answers, strings.TrimSuffix(v.Ns, "."))
 		case *dns.MX:
@@ -303,6 +344,7 @@ func parseDNSMessage(msg *dns.Msg) parsedDNS {
 			out.answers = append(out.answers, rr.String())
 		}
 	}
+	out.cnameChain, out.cnameLoop = collectCNAMEChain(cnames)
 	for _, rr := range msg.Extra {
 		if _, ok := rr.(*dns.OPT); ok {
 			out.edns = true
@@ -310,6 +352,137 @@ func parseDNSMessage(msg *dns.Msg) parsedDNS {
 		}
 	}
 	return out
+}
+
+func collectCNAMEChain(cnames map[string]string) ([]string, bool) {
+	if len(cnames) == 0 {
+		return nil, false
+	}
+	keys := make([]string, 0, len(cnames))
+	for key := range cnames {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var chain []string
+	loop := false
+	for _, start := range keys {
+		seen := map[string]bool{start: true}
+		current := start
+		for depth := 0; depth < maxCNAMEChainDepth; depth++ {
+			next, ok := cnames[current]
+			if !ok {
+				break
+			}
+			if !stringInSlice(chain, next) {
+				chain = append(chain, next)
+			}
+			if seen[next] {
+				loop = true
+				break
+			}
+			seen[next] = true
+			current = next
+		}
+		if _, ok := cnames[current]; ok && len(seen) >= maxCNAMEChainDepth {
+			loop = true
+		}
+	}
+	return chain, loop
+}
+
+func stringInSlice(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func exchangeDNS(ctx context.Context, msg *dns.Msg, resolver, network string, timeoutMS int) (*dns.Msg, time.Duration, error) {
+	client := &dns.Client{
+		Net:     network,
+		Timeout: time.Duration(timeoutMS) * time.Millisecond,
+		Dialer:  &net.Dialer{Timeout: time.Duration(timeoutMS) * time.Millisecond},
+	}
+	return client.ExchangeContext(ctx, msg, resolver)
+}
+
+func dnsAttemptFromExchange(network string, msg *dns.Msg, rtt time.Duration, err error) dnsAttempt {
+	var latency *int64
+	if rtt > 0 {
+		ms := rtt.Milliseconds()
+		latency = &ms
+	}
+	attempt := dnsAttempt{
+		Transport: network,
+		Outcome:   "success",
+		LatencyMS: latency,
+	}
+	if msg != nil && msg.Truncated {
+		attempt.Truncated = true
+		attempt.Outcome = "truncated"
+	}
+	if err != nil {
+		attempt.Outcome = "failed"
+		attempt.ErrorCode = classifyDNSError(err)
+		if attempt.ErrorCode == "DNS_TIMEOUT" {
+			attempt.Outcome = "timeout"
+		}
+		attempt.Error = err.Error()
+	}
+	return attempt
+}
+
+func dnsRCodeErrorCode(rcode int, answerCount int) string {
+	switch rcode {
+	case dns.RcodeSuccess:
+		if answerCount == 0 {
+			return "DNS_NO_ANSWER"
+		}
+		return ""
+	case dns.RcodeNameError:
+		return "DNS_NXDOMAIN"
+	case dns.RcodeServerFailure:
+		return "DNS_SERVFAIL"
+	case dns.RcodeRefused:
+		return "DNS_REFUSED"
+	case dns.RcodeFormatError:
+		return "DNS_MALFORMED_RESPONSE"
+	default:
+		return "DNS_FAILED"
+	}
+}
+
+func classifyDNSError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var netErr net.Error
+	lower := strings.ToLower(err.Error())
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout(), strings.Contains(lower, "timeout"):
+		return "DNS_TIMEOUT"
+	case strings.Contains(lower, "refused"):
+		return "DNS_RESOLVER_UNREACHABLE"
+	case strings.Contains(lower, "malformed"):
+		return "DNS_MALFORMED_RESPONSE"
+	default:
+		return "DNS_FAILED"
+	}
+}
+
+func recordTTL(out *parsedDNS, hdr *dns.RR_Header) {
+	if out == nil || hdr == nil {
+		return
+	}
+	ttl := hdr.Ttl
+	name := strings.TrimSuffix(hdr.Name, ".")
+	out.ttlRecords = append(out.ttlRecords, dnsTTLRecord{Name: name, RType: dns.TypeToString[hdr.Rrtype], TTL: ttl})
+	if out.ttlMin == nil || ttl < *out.ttlMin {
+		copyTTL := ttl
+		out.ttlMin = &copyTTL
+	}
 }
 
 func dnsTypeCode(qtype string) uint16 {

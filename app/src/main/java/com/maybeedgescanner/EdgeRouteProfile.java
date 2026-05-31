@@ -49,6 +49,39 @@ final class EdgeRouteProfile implements Serializable {
         return profile;
     }
 
+    EdgeRouteProfile copy() {
+        EdgeRouteProfile copy = new EdgeRouteProfile();
+        copy.enabled = enabled;
+        copy.routeId = routeId;
+        copy.pluginId = pluginId;
+        copy.providerId = providerId;
+        copy.protocolMode = protocolMode;
+        copy.authMode = authMode;
+        copy.dnsPolicy = dnsPolicy;
+        copy.splitTunnel = splitTunnel;
+        copy.upstreamMode = upstreamMode;
+        copy.downstreamMode = downstreamMode;
+        copy.gatewayMode = gatewayMode;
+        copy.routeBinding = routeBinding;
+        copy.routeStrategy = routeStrategy;
+        copy.conduitMode = conduitMode;
+        copy.providerChain = providerChain;
+        copy.frontingIpRef = frontingIpRef;
+        copy.frontingSni = frontingSni;
+        copy.chainUpstreamRef = chainUpstreamRef;
+        copy.gatewayAuthRef = gatewayAuthRef;
+        copy.lanSocksPort = lanSocksPort;
+        copy.lanHttpPort = lanHttpPort;
+        copy.profileRef = profileRef;
+        copy.credentialRef = credentialRef;
+        copy.configRef = configRef;
+        copy.endpoint = endpoint;
+        copy.packageName = packageName;
+        copy.shareProxyOnLan = shareProxyOnLan;
+        copy.beastMode = beastMode;
+        return copy;
+    }
+
     JSONObject toSidecarJson() throws Exception {
         JSONObject root = new JSONObject();
         if (!enabled) return root;

@@ -71,11 +71,11 @@ The manual targets text area in `Sources` accepts complex inputs. You can combin
 | `1.1.1.1` | Single IPv4 address |
 | `2606:4700:4700::1111` | Single IPv6 address |
 | `one.one.one.one` | Resolved hostname address |
-| `192.168.1.0/24` | CIDR notation (expands up to the safe CIDR limit) |
+| `192.168.1.0/24` | CIDR notation (expands to usable hosts; set an explicit IP limit or use `0` for unlimited) |
 | `192.168.1.10-192.168.1.20` | Hyphen-separated IP range |
 
-> [!IMPORTANT]
-> To prevent app lag and system battery drain, very large CIDR expansions (such as `/16` subnets) are capped by a strict built-in safety limit.
+> [!NOTE]
+> Large CIDR expansions are no longer blocked by a built-in hard cap. Use the IP scan limit field (`0` = unlimited) and performance presets to control run size on mobile hardware.
 
 ---
 

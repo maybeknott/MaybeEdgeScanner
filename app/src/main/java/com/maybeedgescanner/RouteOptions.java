@@ -29,7 +29,7 @@ final class RouteOptions {
             "Remote DNS", "remote_dns",
             "Route DNS", "route_dns",
             "Control D", "ctrld",
-            "Control D legacy", "control_d",
+            "Control D alternate ID", "control_d",
             "Windscribe app ROBERT", "robert",
             "DNS over HTTPS", "doh",
             "DNS over TLS", "dot",

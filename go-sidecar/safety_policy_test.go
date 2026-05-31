@@ -58,28 +58,28 @@ func TestSafeQuickPreservesLargeExplicitBudget(t *testing.T) {
 func TestNormalizeDefaultsOnlyWhenBudgetMissing(t *testing.T) {
 	req := scanRequest{MaxTargets: -1, MaxCIDRHosts: -1, BatchSize: -1}
 	req.normalize()
-	if req.MaxTargets != 72000 {
-		t.Fatalf("MaxTargets default=%d, want 72000", req.MaxTargets)
+	if req.MaxTargets != 0 {
+		t.Fatalf("MaxTargets default=%d, want 0 (unlimited)", req.MaxTargets)
 	}
-	if req.MaxCIDRHosts != 4096 {
-		t.Fatalf("MaxCIDRHosts default=%d, want 4096", req.MaxCIDRHosts)
+	if req.MaxCIDRHosts != 0 {
+		t.Fatalf("MaxCIDRHosts default=%d, want 0 (unlimited)", req.MaxCIDRHosts)
 	}
 	if req.BatchSize != 12000 {
 		t.Fatalf("BatchSize default=%d, want 12000", req.BatchSize)
 	}
 }
 
-func TestLegacyCompatPresetDoesNotForceSafetyBudgets(t *testing.T) {
+func TestStandardPresetDoesNotForceSafetyBudgets(t *testing.T) {
 	req := scanRequest{MaxTargets: 5000, MaxCIDRHosts: 1024, BatchSize: 1000, RatePerSecond: 0}
 	req.normalize()
-	if req.SafetyPreset != safetyPresetLegacyCompat {
-		t.Fatalf("SafetyPreset=%q, want legacy_compat", req.SafetyPreset)
+	if req.SafetyPreset != safetyPresetStandard {
+		t.Fatalf("SafetyPreset=%q, want standard", req.SafetyPreset)
 	}
 	if req.RespectSafety {
-		t.Fatal("legacy compatibility must not force RespectSafety")
+		t.Fatal("standard preset must not force RespectSafety")
 	}
 	if req.MaxTargets != 5000 || req.MaxCIDRHosts != 1024 || req.BatchSize != 1000 {
-		t.Fatalf("legacy compatibility unexpectedly changed budget: %+v", req)
+		t.Fatalf("standard preset unexpectedly changed budget: %+v", req)
 	}
 }
 
@@ -90,7 +90,17 @@ func TestSafetyPolicyObservationDoesNotAuthorizeFromProviderClassification(t *te
 	if obs.ProviderClassificationAuthorizes {
 		t.Fatal("provider classification must never authorize scanning")
 	}
-	if !obs.BroadScanConfirmationRequired {
-		t.Fatal("safe_quick without explicit confirmation should report broad scan confirmation requirement")
+	if obs.BroadScanConfirmationRequired {
+		t.Fatal("broad scan confirmation gate was removed; observation must stay false")
+	}
+}
+
+func TestExpansionBudgetTreatsZeroAsUnlimited(t *testing.T) {
+	if expansionBudget(0) != expansionBudget(-1) {
+		t.Fatal("zero and negative budgets should both mean unlimited")
+	}
+	got := expandTargets([]string{"203.0.113.1", "203.0.113.2", "203.0.113.3"}, 0, 0, false)
+	if len(got) != 3 {
+		t.Fatalf("expandTargets()=%v, want 3 targets with unlimited budget", got)
 	}
 }

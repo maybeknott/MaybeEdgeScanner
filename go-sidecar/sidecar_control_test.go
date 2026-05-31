@@ -7,8 +7,17 @@ import (
 	"testing"
 )
 
+func mustNewSidecarControlPlane(t *testing.T) *sidecarControlPlane {
+	t.Helper()
+	cp, err := newSidecarControlPlane()
+	if err != nil {
+		t.Fatalf("newSidecarControlPlane() error: %v", err)
+	}
+	return cp
+}
+
 func TestSidecarMutationAuthRejectsMissingToken(t *testing.T) {
-	cp := newSidecarControlPlane()
+	cp := mustNewSidecarControlPlane(t)
 	called := false
 	handler := cp.requireMutationAuth(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -22,10 +31,13 @@ func TestSidecarMutationAuthRejectsMissingToken(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d, want %d", rec.Code, http.StatusUnauthorized)
 	}
+	if !strings.Contains(rec.Body.String(), `"error_code":"LOCAL_API_UNAUTHORIZED"`) {
+		t.Fatalf("expected structured unauthorized error, got %s", rec.Body.String())
+	}
 }
 
 func TestSidecarMutationAuthAcceptsBearerToken(t *testing.T) {
-	cp := newSidecarControlPlane()
+	cp := mustNewSidecarControlPlane(t)
 	called := false
 	handler := cp.requireMutationAuth(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -44,7 +56,7 @@ func TestSidecarMutationAuthAcceptsBearerToken(t *testing.T) {
 }
 
 func TestSidecarMutationAuthAcceptsHttpOnlyCookie(t *testing.T) {
-	cp := newSidecarControlPlane()
+	cp := mustNewSidecarControlPlane(t)
 	called := false
 	handler := cp.requireMutationAuth(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -63,7 +75,7 @@ func TestSidecarMutationAuthAcceptsHttpOnlyCookie(t *testing.T) {
 }
 
 func TestSidecarBrowserCookieIsHttpOnlyAndAPIScoped(t *testing.T) {
-	cp := newSidecarControlPlane()
+	cp := mustNewSidecarControlPlane(t)
 	rec := httptest.NewRecorder()
 	cp.setBrowserCookie(rec)
 	cookies := rec.Result().Cookies()
@@ -83,7 +95,7 @@ func TestSidecarBrowserCookieIsHttpOnlyAndAPIScoped(t *testing.T) {
 }
 
 func TestSidecarMutationAuthRequiresPostBeforeToken(t *testing.T) {
-	cp := newSidecarControlPlane()
+	cp := mustNewSidecarControlPlane(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/stop", nil)
 	req.Header.Set("Authorization", "Bearer "+cp.token)
@@ -91,10 +103,13 @@ func TestSidecarMutationAuthRequiresPostBeforeToken(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status=%d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
+	if !strings.Contains(rec.Body.String(), `"error_code":"METHOD_NOT_ALLOWED"`) || !strings.Contains(rec.Body.String(), `"required_method":"POST"`) {
+		t.Fatalf("expected structured method error, got %s", rec.Body.String())
+	}
 }
 
 func TestSidecarMutationAuthLimitsBodySize(t *testing.T) {
-	cp := newSidecarControlPlane()
+	cp := mustNewSidecarControlPlane(t)
 	handler := cp.requireMutationAuth(func(w http.ResponseWriter, r *http.Request) {
 		_, err := r.Body.Read(make([]byte, defaultRequestBodySize+1))
 		if err == nil {
@@ -112,7 +127,7 @@ func TestSidecarMutationAuthLimitsBodySize(t *testing.T) {
 }
 
 func TestHeartbeatPayloadIsVersionedAndTokenRedacted(t *testing.T) {
-	cp := newSidecarControlPlane()
+	cp := mustNewSidecarControlPlane(t)
 	payload := cp.heartbeatPayload()
 	if payload.Version != sidecarAPIVersion {
 		t.Fatalf("version=%d, want %d", payload.Version, sidecarAPIVersion)
@@ -128,5 +143,94 @@ func TestHeartbeatPayloadIsVersionedAndTokenRedacted(t *testing.T) {
 	}
 	if payload.SourceOfferURL == "" {
 		t.Fatal("heartbeat must include source offer URL")
+	}
+}
+
+func TestSidecarMutationAuthRejectsQueryToken(t *testing.T) {
+	cp := mustNewSidecarControlPlane(t)
+	called := false
+	handler := cp.requireMutationAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/stop?token="+cp.token, nil)
+	handler(rec, req)
+	if called {
+		t.Fatal("handler called with query token")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestSidecarMutationAuthRejectsLengthMismatchedToken(t *testing.T) {
+	cp := mustNewSidecarControlPlane(t)
+	called := false
+	handler := cp.requireMutationAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/stop", nil)
+	req.Header.Set("X-Sidecar-Token", "x")
+	handler(rec, req)
+	if called {
+		t.Fatal("handler called with wrong token length")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestSidecarReadAuthRejectsMissingToken(t *testing.T) {
+	cp := mustNewSidecarControlPlane(t)
+	called := false
+	handler := cp.requireReadAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	handler(rec, req)
+	if called {
+		t.Fatal("read handler called without token")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if !strings.Contains(rec.Body.String(), `"error_code":"LOCAL_API_UNAUTHORIZED"`) {
+		t.Fatalf("expected structured unauthorized error, got %s", rec.Body.String())
+	}
+}
+
+func TestSidecarReadAuthAcceptsBearerToken(t *testing.T) {
+	cp := mustNewSidecarControlPlane(t)
+	called := false
+	handler := cp.requireReadAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer "+cp.token)
+	handler(rec, req)
+	if !called {
+		t.Fatal("read handler not called with valid token")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestSidecarReadAuthRequiresGetBeforeToken(t *testing.T) {
+	cp := mustNewSidecarControlPlane(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer "+cp.token)
+	cp.requireReadAuth(func(w http.ResponseWriter, r *http.Request) {})(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+	if !strings.Contains(rec.Body.String(), `"error_code":"METHOD_NOT_ALLOWED"`) || !strings.Contains(rec.Body.String(), `"required_method":"GET"`) {
+		t.Fatalf("expected structured method error, got %s", rec.Body.String())
 	}
 }

@@ -13,6 +13,15 @@ import java.util.List;
 final class ScanTargetPlanner {
     private ScanTargetPlanner() {}
 
+    static String scanLimitLabel(int targetCap) {
+        return targetCap <= 0 ? "unlimited" : String.format(java.util.Locale.US, "%,d", targetCap);
+    }
+
+    static int effectiveScanCap(int targetCap, int estimatedTargets) {
+        if (targetCap <= 0) return Math.max(0, estimatedTargets);
+        return Math.min(Math.max(0, estimatedTargets), targetCap);
+    }
+
     static List<String> lines(String value) {
         return unique(Arrays.asList(String.valueOf(value == null ? "" : value).split("[,;\\s\\r\\n]+")));
     }
@@ -74,7 +83,7 @@ final class ScanTargetPlanner {
 
     static List<String> expandTargets(List<String> raw, int totalCap) {
         LinkedHashSet<String> out = new LinkedHashSet<>();
-        int cap = Math.max(1, totalCap);
+        int cap = totalCap <= 0 ? Integer.MAX_VALUE : totalCap;
         for (String value : raw) {
             if (out.size() >= cap) break;
             String clean = cleanToken(value);

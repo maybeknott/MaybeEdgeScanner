@@ -142,6 +142,9 @@ func TestRoutingPluginsEndpointIsReadOnly(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status=%d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
+	if !strings.Contains(rec.Body.String(), `"error_code":"METHOD_NOT_ALLOWED"`) || !strings.Contains(rec.Body.String(), `"required_method":"GET"`) {
+		t.Fatalf("expected structured method error, got %s", rec.Body.String())
+	}
 }
 
 func TestRoutingPluginConfigAcceptsPsiphonConfigReference(t *testing.T) {
@@ -151,7 +154,7 @@ func TestRoutingPluginConfigAcceptsPsiphonConfigReference(t *testing.T) {
 	}
 	result, err := validateRoutingPluginConfig(registry, RoutingPluginConfig{
 		SchemaVersion: 1,
-		RouteID:       "route-psiphon-lab",
+		RouteID:       "route-psiphon-core",
 		PluginID:      "psiphon",
 		Enabled:       true,
 		RemoteDNS:     true,
@@ -227,10 +230,42 @@ func TestRoutingPluginConfigAcceptsPsiphonConduitFrontingBeastAndLanShare(t *tes
 	if !result.LANSharing || !result.BeastMode {
 		t.Fatalf("lan/beast policy not reflected: %#v", result)
 	}
+	if !result.Attachable {
+		t.Fatalf("psiphon supervised mode with validated local proxy endpoint must be attachable: %#v", result)
+	}
+	psiphonAttachable, ok := result.Observation.Evidence["route_attachable"].(bool)
+	if !ok || !psiphonAttachable {
+		t.Fatalf("expected route_attachable=true for psiphon local proxy route, got %#v", result.Observation.Evidence["route_attachable"])
+	}
 	if result.Observation.RouteStrategy == nil || *result.Observation.RouteStrategy != "cdn_fronting" ||
 		result.Observation.FrontingPolicy == nil || *result.Observation.FrontingPolicy != "cdn_fronting" ||
 		!result.Observation.LANSharing || !result.Observation.BeastMode {
 		t.Fatalf("observation template missing psiphon route policy: %#v", result.Observation)
+	}
+}
+
+func TestRoutingPluginConfigMarksGenericProxyAttachable(t *testing.T) {
+	registry, err := defaultRoutingPluginRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := validateRoutingPluginConfig(registry, RoutingPluginConfig{
+		SchemaVersion: 1,
+		RouteID:       "route-generic-attachable",
+		PluginID:      "generic-proxy",
+		Enabled:       true,
+		Endpoint:      "socks5://127.0.0.1:1080",
+		Fields:        map[string]string{"dns_policy": "remote"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Valid || !result.DryRunOnly || !result.Attachable {
+		t.Fatalf("expected dry-run + attachable generic proxy validation, got %#v", result)
+	}
+	attachable, ok := result.Observation.Evidence["route_attachable"].(bool)
+	if !ok || !attachable {
+		t.Fatalf("expected route_attachable=true for generic proxy observation evidence, got %#v", result.Observation.Evidence["route_attachable"])
 	}
 }
 
@@ -460,7 +495,7 @@ func TestRoutingPluginConfigRejectsLocalAPIParserBypasses(t *testing.T) {
 	} {
 		_, err = validateRoutingPluginConfig(registry, RoutingPluginConfig{
 			SchemaVersion: 1,
-			RouteID:       "route-psiphon-lab",
+			RouteID:       "route-psiphon-core",
 			PluginID:      "psiphon",
 			Enabled:       true,
 			RemoteDNS:     true,
@@ -549,6 +584,13 @@ func TestRoutingPluginConfigAcceptsWindscribeLocalProxyMode(t *testing.T) {
 	}
 	if result.ReadinessProbe == "" {
 		t.Fatalf("missing readiness probe: %#v", result)
+	}
+	if !result.Attachable {
+		t.Fatalf("windscribe local proxy mode must be attachable when endpoint is validated: %#v", result)
+	}
+	windscribeAttachable, ok := result.Observation.Evidence["route_attachable"].(bool)
+	if !ok || !windscribeAttachable {
+		t.Fatalf("expected route_attachable=true for windscribe local proxy mode, got %#v", result.Observation.Evidence["route_attachable"])
 	}
 	if result.RouteBinding != "local_proxy_gateway" || !containsString(result.Components, "proxy_gateway_policy") {
 		t.Fatalf("local proxy binding/components missing: %#v", result)

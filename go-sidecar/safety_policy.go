@@ -18,8 +18,8 @@ type SafetyPolicyObservation struct {
 }
 
 const (
-	safetyPresetLegacyCompat = "legacy_compat"
-	safetyPresetSafeQuick    = "safe_quick"
+	safetyPresetStandard  = "standard"
+	safetyPresetSafeQuick = "safe_quick"
 )
 
 func (r *scanRequest) applySafetyPreset() {
@@ -32,24 +32,21 @@ func (r *scanRequest) applySafetyPreset() {
 		if r.JitterMS <= 0 {
 			r.JitterMS = 10
 		}
+	case safetyPresetStandard:
 	default:
-		r.SafetyPreset = safetyPresetLegacyCompat
+		r.SafetyPreset = safetyPresetStandard
 	}
 }
 
 func safetyPolicyObservation(req scanRequest, targetCount int) SafetyPolicyObservation {
-	policyID := "legacy-compat-v1"
-	authorizationRequired := false
-	confirmationThreshold := 0
+	policyID := "standard-v1"
 	if req.SafetyPreset == safetyPresetSafeQuick {
 		policyID = "safe_quick-v1"
-		authorizationRequired = true
-		confirmationThreshold = 1000000
 	}
 	obs := SafetyPolicyObservation{
 		PolicyID:                         policyID,
 		Preset:                           req.SafetyPreset,
-		AuthorizationRequired:            authorizationRequired,
+		AuthorizationRequired:            false,
 		RespectSafety:                    req.RespectSafety,
 		MaxTargetsEffective:              req.MaxTargets,
 		MaxCIDRHostsEffective:            req.MaxCIDRHosts,
@@ -57,18 +54,15 @@ func safetyPolicyObservation(req scanRequest, targetCount int) SafetyPolicyObser
 		JitterMSEffective:                req.JitterMS,
 		TargetCount:                      targetCount,
 		BroadScanConfirmed:               req.BroadScanConfirmed,
-		BroadScanConfirmationRequired:    confirmationThreshold > 0 && targetCount > confirmationThreshold && !req.BroadScanConfirmed,
+		BroadScanConfirmationRequired:    false,
 		SpecialRangesBlocked:             req.RespectSafety,
 		ProviderClassificationAuthorizes: false,
 	}
-	if req.SafetyPreset == safetyPresetLegacyCompat && !req.RespectSafety {
-		obs.Warnings = append(obs.Warnings, "Compatibility policy: reserved/special range filtering is not forced unless respect_safety is true.")
+	if req.SafetyPreset == safetyPresetStandard && !req.RespectSafety {
+		obs.Warnings = append(obs.Warnings, "Standard policy: reserved/special range filtering follows the explicit respect_safety setting.")
 	}
 	if req.RatePerSecond == 0 {
 		obs.Warnings = append(obs.Warnings, "No effective rate limit is configured.")
-	}
-	if obs.BroadScanConfirmationRequired {
-		obs.Warnings = append(obs.Warnings, "safe_quick target count exceeds the confirmation threshold; execution is not reduced, but UI/API callers should require explicit user confirmation.")
 	}
 	return obs
 }

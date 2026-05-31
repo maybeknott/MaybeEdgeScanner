@@ -55,7 +55,7 @@ final class SourceCatalog {
         return loader.estimatedIps(loader.tokens(CLOUDFLARE_RANGES));
     }
 
-    static int otherCdnTotal(Loader loader) {
+    static int otherNetworkTotal(Loader loader) {
         int total = 0;
         for (String asset : new String[]{
                 GITHUB_PAGES_RANGES,

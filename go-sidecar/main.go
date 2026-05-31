@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -56,48 +57,60 @@ type scanRequest struct {
 }
 
 type result struct {
-	Target              string `json:"target"`
-	IP                  string `json:"ip"`
-	Port                int    `json:"port"`
-	SNI                 string `json:"sni"`
-	TCP                 bool   `json:"tcp"`
-	TLS                 bool   `json:"tls"`
-	HTTP                bool   `json:"http"`
-	HTTPStatus          int    `json:"http_status"`
-	TLSVersion          string `json:"tls_version,omitempty"`
-	TLSCipher           string `json:"tls_cipher,omitempty"`
-	CertVerified        bool   `json:"cert_verified"`
-	ALPN                string `json:"alpn,omitempty"`
-	TLSFingerprint      string `json:"tls_fingerprint,omitempty"`
-	CertSubject         string `json:"cert_subject,omitempty"`
-	ServerHeader        string `json:"server_header,omitempty"`
-	CacheHeader         string `json:"cache_header,omitempty"`
-	AltSvc              string `json:"alt_svc,omitempty"`
-	HTTP3Hint           bool   `json:"http3_hint,omitempty"`
-	CDN                 string `json:"cdn"`
-	ProviderID          string `json:"provider_id,omitempty"`
-	ProviderName        string `json:"provider_name,omitempty"`
-	ProviderPrefix      string `json:"provider_prefix,omitempty"`
-	ProviderConfidence  string `json:"provider_confidence,omitempty"`
-	ProviderCorpusID    string `json:"provider_corpus_id,omitempty"`
-	ProviderSource      string `json:"provider_source,omitempty"`
-	RouteID             string `json:"route_id,omitempty"`
-	RouteProviderID     string `json:"route_provider_id,omitempty"`
-	RouteBinding        string `json:"route_binding,omitempty"`
-	RouteProtocolMode   string `json:"route_protocol_mode,omitempty"`
-	RouteAuthMode       string `json:"route_auth_mode,omitempty"`
-	RouteDNSPolicy      string `json:"route_dns_policy,omitempty"`
-	RouteStrategy       string `json:"route_strategy,omitempty"`
-	RouteProviderChain  string `json:"route_provider_chain,omitempty"`
-	RouteFrontingPolicy string `json:"route_fronting_policy,omitempty"`
-	RouteLANSharing     bool   `json:"route_lan_sharing,omitempty"`
-	RouteBeastMode      bool   `json:"route_beast_mode,omitempty"`
-	RouteReadiness      string `json:"route_readiness,omitempty"`
-	RouteErrorCode      string `json:"route_error_code,omitempty"`
-	LatencyMS           int64  `json:"latency_ms"`
-	Score               int    `json:"score"`
-	Error               string `json:"error,omitempty"`
-	BatchNumber         int    `json:"batch_number"`
+	Target                string `json:"target"`
+	IP                    string `json:"ip"`
+	Port                  int    `json:"port"`
+	SNI                   string `json:"sni"`
+	TCP                   bool   `json:"tcp"`
+	TLS                   bool   `json:"tls"`
+	HTTP                  bool   `json:"http"`
+	HTTPStatus            int    `json:"http_status"`
+	TLSVersion            string `json:"tls_version,omitempty"`
+	TLSCipher             string `json:"tls_cipher,omitempty"`
+	CertVerified          bool   `json:"cert_verified"`
+	ALPN                  string `json:"alpn,omitempty"`
+	TLSFingerprint        string `json:"tls_fingerprint,omitempty"`
+	CertSubject           string `json:"cert_subject,omitempty"`
+	ServerHeader          string `json:"server_header,omitempty"`
+	CacheHeader           string `json:"cache_header,omitempty"`
+	AltSvc                string `json:"alt_svc,omitempty"`
+	HTTP3Hint             bool   `json:"http3_hint,omitempty"`
+	HTTPProbeCode         string `json:"http_probe_code,omitempty"`
+	NetworkClassification string `json:"network_classification"`
+	ProviderID            string `json:"provider_id,omitempty"`
+	ProviderName          string `json:"provider_name,omitempty"`
+	ProviderPrefix        string `json:"provider_prefix,omitempty"`
+	ProviderConfidence    string `json:"provider_confidence,omitempty"`
+	ProviderCorpusID      string `json:"provider_corpus_id,omitempty"`
+	ProviderSource        string `json:"provider_source,omitempty"`
+	RequestedRouteID      string `json:"requested_route_id,omitempty"`
+	ObservedRouteID       string `json:"observed_route_id,omitempty"`
+	ObservedRouteType     string `json:"observed_route_type,omitempty"`
+	RouteUsed             bool   `json:"route_used,omitempty"`
+	RouteMismatchCode     string `json:"route_mismatch_code,omitempty"`
+	RouteConfigReady      bool   `json:"route_config_ready"`
+	RouteDialerReady      bool   `json:"route_dialer_ready"`
+	RouteObserved         bool   `json:"route_observed"`
+	RouteEvidenceState    string `json:"route_evidence_state,omitempty"`
+	RouteID               string `json:"route_id,omitempty"`
+	RouteProviderID       string `json:"route_provider_id,omitempty"`
+	RouteBinding          string `json:"route_binding,omitempty"`
+	RouteProtocolMode     string `json:"route_protocol_mode,omitempty"`
+	RouteAuthMode         string `json:"route_auth_mode,omitempty"`
+	RouteDNSPolicy        string `json:"route_dns_policy,omitempty"`
+	RouteStrategy         string `json:"route_strategy,omitempty"`
+	RouteProviderChain    string `json:"route_provider_chain,omitempty"`
+	RouteFrontingPolicy   string `json:"route_fronting_policy,omitempty"`
+	RouteLANSharing       bool   `json:"route_lan_sharing,omitempty"`
+	RouteBeastMode        bool   `json:"route_beast_mode,omitempty"`
+	RouteReadiness        string `json:"route_readiness,omitempty"`
+	RouteReadinessSource  string `json:"route_readiness_source,omitempty"`
+	RouteErrorCode        string `json:"route_error_code,omitempty"`
+	LatencyMS             int64  `json:"latency_ms"`
+	Score                 int    `json:"score"`
+	ErrorCode             string `json:"error_code,omitempty"`
+	Error                 string `json:"error,omitempty"`
+	BatchNumber           int    `json:"batch_number"`
 }
 
 type stats struct {
@@ -110,16 +123,6 @@ type stats struct {
 	Batches     int `json:"batches"`
 	Batch       int `json:"batch"`
 }
-
-const (
-	maxScanRequestThreads    = 8192
-	maxScanRequestTimeoutMS  = 120000
-	maxScanRequestBatchSize  = 65536
-	maxScanRequestMaxTargets = 200000
-	maxScanRequestMaxCIDR    = 65536
-	maxScanRequestRatePerSec = 200000
-	maxScanRequestJitterMS   = 60000
-)
 
 var (
 	activeCancelMu       sync.Mutex
@@ -188,7 +191,7 @@ type CorporateNetworkIndex struct {
 	RootNode *RadixNode
 }
 
-var cdnIndex = &CorporateNetworkIndex{}
+var networkClassificationIndex = &CorporateNetworkIndex{}
 
 func (cni *CorporateNetworkIndex) Insert(prefix netip.Prefix, payload string) {
 	cni.Lock()
@@ -249,7 +252,7 @@ func getBit(addr netip.Addr, bitIndex int) int {
 	return int((bytes[byteIdx] >> bitIdx) & 1)
 }
 
-func initCDNIndex() {
+func initNetworkClassificationIndex() {
 	cdns := map[string][]string{
 		"cloudflare": {
 			"104.16.0.0/12", "172.64.0.0/13", "2606:4700::/32",
@@ -267,18 +270,22 @@ func initCDNIndex() {
 	for payload, cidrs := range cdns {
 		for _, cidr := range cidrs {
 			if prefix, err := netip.ParsePrefix(cidr); err == nil {
-				cdnIndex.Insert(prefix, payload)
+				networkClassificationIndex.Insert(prefix, payload)
 			}
 		}
 	}
 }
 
 func main() {
-	initCDNIndex()
+	initNetworkClassificationIndex()
 	if err := initProviderCorpusObserver(); err != nil {
 		slog.Warn("provider corpus observer disabled", "error", err)
 	}
-	control := newSidecarControlPlane()
+	control, err := newSidecarControlPlane()
+	if err != nil {
+		slog.Error("sidecar control-plane initialization failed", "error", err)
+		os.Exit(1)
+	}
 	activeControlPlane = control
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", index)
@@ -287,20 +294,20 @@ func main() {
 	mux.HandleFunc("/api/dns", control.requireMutationAuth(scanDNS))
 	mux.HandleFunc("/api/stop", control.requireMutationAuth(control.stop))
 	mux.HandleFunc("/api/shutdown", control.requireMutationAuth(control.shutdown))
-	mux.HandleFunc("/api/heartbeat", control.heartbeat)
+	mux.HandleFunc("/api/heartbeat", control.requireReadAuth(control.heartbeat))
 	mux.HandleFunc("/api/plugins", routingPlugins)
 	mux.HandleFunc("/api/plugins/validate", control.requireMutationAuth(validateRoutingPlugin))
 	mux.HandleFunc("/api/provider-corpus", providerCorpusStatusHandler)
 	mux.HandleFunc("/api/export/nmap", control.requireMutationAuth(exportNmap))
-	mux.HandleFunc("/metrics", metrics)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/metrics", control.requireReadAuth(metrics))
+	mux.HandleFunc("/health", control.requireReadAuth(func(w http.ResponseWriter, _ *http.Request) {
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": true, "time": time.Now().Format(time.RFC3339),
 			"goroutines": runtime.NumGoroutine(), "heap_bytes": mem.HeapAlloc,
 		})
-	})
+	}))
 
 	addr := "127.0.0.1:10808"
 	srv := &http.Server{Addr: addr, Handler: mux}
@@ -335,11 +342,11 @@ func index(w http.ResponseWriter, _ *http.Request) {
 <div class=top><div><h1>MaybeEdgeScanner Sidecar</h1><p class=muted>Live SNI/IP/CIDR scanner with progress telemetry, safety policy, and filtered data grid.</p></div><div><button onclick="document.body.classList.toggle('density-compact')">Toggle density</button></div></div>
 <div class=tabs><button class="tab active" onclick="showTab('scan',this)">Scan</button><button class=tab onclick="showTab('analytics',this)">Analytics</button><button class=tab onclick="showTab('help',this)">Help</button></div>
 <div class=grid><section class=card><label>Targets</label><textarea id=targets rows=11>{{.Targets}}</textarea><label>SNIs</label><textarea id=snis rows=6>{{.SNIs}}</textarea>
-<div class=row><input id=maxTargets type=number value=72000><input id=batchSize type=number value=12000></div><div class=row><input id=threads type=number value=64><input id=timeout type=number value=2500></div><input id=visibleRows type=number value=1000 placeholder="Visible rows">
-<div class=row><input id=ports value="443"><input id=path value="/"></div><select id=tlsFingerprint><option value=rotate>Rotate TLS fingerprint</option><option value=chrome>Chrome ClientHello</option><option value=firefox>Firefox ClientHello</option><option value=ios>iOS ClientHello</option><option value=randomized>Randomized ALPN ClientHello</option><option value=randomized-no-alpn>Randomized no-ALPN ClientHello</option></select><select id=safetyPreset><option value=legacy_compat>Compatibility policy</option><option value=safe_quick>Safe quick policy</option></select><div class=row><input id=rate type=number value=250 placeholder="Rate/sec"><input id=jitter type=number value=25 placeholder="Jitter ms"></div>
+<div class=row><input id=maxTargets type=number value=0 placeholder="0 = unlimited"><input id=batchSize type=number value=12000></div><div class=row><input id=threads type=number value=64><input id=timeout type=number value=2500></div><input id=visibleRows type=number value=1000 placeholder="Visible rows">
+<div class=row><input id=ports value="443"><input id=path value="/"></div><select id=tlsFingerprint><option value=rotate>Rotate TLS fingerprint</option><option value=chrome>Chrome ClientHello</option><option value=firefox>Firefox ClientHello</option><option value=ios>iOS ClientHello</option><option value=randomized>Randomized ALPN ClientHello</option><option value=randomized-no-alpn>Randomized no-ALPN ClientHello</option></select><select id=safetyPreset><option value=standard>Standard policy</option><option value=safe_quick>Safe quick policy</option></select><div class=row><input id=rate type=number value=250 placeholder="Rate/sec"><input id=jitter type=number value=25 placeholder="Jitter ms"></div>
 <label><input id=multi type=checkbox checked style="width:auto"> Multi-SNI</label><label><input id=http type=checkbox checked style="width:auto"> HTTP HEAD probe</label><label><input id=randomize type=checkbox checked style="width:auto"> Randomize target order</label><label><input id=safety type=checkbox checked style="width:auto"> Block reserved/unsafe ranges</label>
 <button onclick=start()>Start Scan</button><button class=danger onclick=stop()>Stop</button></section>
-<section class=card id=tab-scan><div class=dash><div class=ring id=ring><span id=ringText>0%</span></div><div><h3 id=status>Ready</h3><div class=bar><div class=fill id=fill></div></div><p id=metrics class=muted></p></div></div><table><thead><tr><th>Target</th><th>IP</th><th>SNI</th><th>Checks</th><th>ms</th><th>ALPN</th><th>CDN</th><th>Provider</th></tr></thead><tbody id=rows></tbody></table></section>
+<section class=card id=tab-scan><div class=dash><div class=ring id=ring><span id=ringText>0%</span></div><div><h3 id=status>Ready</h3><div class=bar><div class=fill id=fill></div></div><p id=metrics class=muted></p></div></div><table><thead><tr><th>Target</th><th>IP</th><th>SNI</th><th>Checks</th><th>ms</th><th>ALPN</th><th>Network</th><th>Provider</th></tr></thead><tbody id=rows></tbody></table></section>
 <section class=card id=tab-analytics style="display:none"><h3>Analytics</h3><p class=muted id=analyticsText>No scan yet.</p><div class=hex id=hex></div></section>
 <section class=card id=tab-help style="display:none"><h3>Safety and UX</h3><p class=muted>Rate/sec and jitter reduce IDS-like sequential bursts. Safety mode drops private, loopback, multicast, and default-route CIDRs. Use exports or /metrics for external dashboards.</p></section></div>
 <script>
@@ -349,7 +356,7 @@ function showTab(id,el){for(let x of ['scan','analytics','help'])document.getEle
 async function start(){rows=[];document.getElementById('rows').innerHTML='';document.getElementById('hex').innerHTML='';set('Starting');let r=await fetch('/api/scan',{method:'POST',headers:authHeaders({'content-type':'application/json'}),body:JSON.stringify({targets:v('targets').split(/[\s,;]+/).filter(Boolean),snis:v('snis').split(/[\s,;]+/).filter(Boolean),ports:v('ports').split(/[\s,;]+/).filter(Boolean).map(Number),http_path:v('path'),tls_fingerprint:v('tlsFingerprint'),safety_preset:v('safetyPreset'),max_targets:+v('maxTargets'),batch_size:+v('batchSize'),threads:+v('threads'),timeout_ms:+v('timeout'),rate_per_second:+v('rate'),jitter_ms:+v('jitter'),randomize:document.getElementById('randomize').checked,respect_safety:document.getElementById('safety').checked,multi_sni:document.getElementById('multi').checked,http_probe:document.getElementById('http').checked})});let rd=r.body.getReader(),d=new TextDecoder(),buf='';while(true){let x=await rd.read();if(x.done)break;buf+=d.decode(x.value,{stream:true});let parts=buf.split(/\n/);buf=parts.pop();for(let p of parts){if(!p.trim())continue;let e=JSON.parse(p);if(e.type==='init'){let sp=e.safety_policy||{};set('Scanning '+e.total+' jobs in '+e.batches+' batches · '+(sp.preset||'policy'))}if(e.type==='progress'){render(e.result,e.stats)}if(e.type==='done'){set(e.stopped?'Stopped':'Done')}}}}
 async function stop(){await fetch('/api/stop',{method:'POST',headers:authHeaders()});set('Stopping')}
 function esc(x){return String(x??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-function render(r,s){rows.push(r);rows.sort((a,b)=>b.score-a.score||a.latency_ms-b.latency_ms);let visible=Math.max(1,+v('visibleRows')||rows.length);let shown=rows.slice(0,visible);let pct=s.checked*100/Math.max(1,s.total);document.getElementById('fill').style.width=pct+'%';document.getElementById('ring').style.background='conic-gradient(var(--accent) '+(pct*3.6)+'deg,#263948 0deg)';document.getElementById('ringText').textContent=Math.round(pct)+'%';document.getElementById('metrics').textContent='Checked '+s.checked+'/'+s.total+' · working '+s.working+' · TLS '+s.tls_working+' · HTTP '+s.http_working+' · batch '+s.batch+'/'+s.batches+' · showing '+shown.length+'/'+rows.length;document.getElementById('rows').innerHTML=shown.map(x=>'<tr title="'+esc((x.tls_version||'')+' '+(x.cert_subject||''))+'"><td>'+esc(x.target)+'</td><td>'+esc(x.ip+':'+x.port)+'</td><td>'+esc(x.sni||'--')+'</td><td><span class="'+(x.tcp?'ok':'bad')+'">TCP</span> <span class="'+(x.tls?'ok':'bad')+'">TLS</span> <span class="'+(x.http?'ok':'bad')+'">HTTP</span></td><td>'+(x.latency_ms||'')+'</td><td>'+esc(x.alpn||'--')+'</td><td><span class=pill>'+esc(x.cdn)+'</span></td><td><span class=pill title="'+esc(x.provider_prefix||'')+'">'+esc(x.provider_id||'--')+'</span></td></tr>').join('');document.getElementById('analyticsText').textContent='Top score '+(rows[0]?.score||0)+' · CDN groups '+new Set(rows.map(x=>x.cdn)).size+' · provider groups '+new Set(rows.map(x=>x.provider_id).filter(Boolean)).size;let h=document.getElementById('hex');{let c=document.createElement('div');c.className='cell '+(r.http?'good':r.tls||r.tcp?'mid':'bad');h.appendChild(c)}}
+function render(r,s){rows.push(r);rows.sort((a,b)=>b.score-a.score||a.latency_ms-b.latency_ms);let visible=Math.max(1,+v('visibleRows')||rows.length);let shown=rows.slice(0,visible);let pct=s.checked*100/Math.max(1,s.total);document.getElementById('fill').style.width=pct+'%';document.getElementById('ring').style.background='conic-gradient(var(--accent) '+(pct*3.6)+'deg,#263948 0deg)';document.getElementById('ringText').textContent=Math.round(pct)+'%';document.getElementById('metrics').textContent='Checked '+s.checked+'/'+s.total+' · working '+s.working+' · TLS '+s.tls_working+' · HTTP '+s.http_working+' · batch '+s.batch+'/'+s.batches+' · showing '+shown.length+'/'+rows.length;document.getElementById('rows').innerHTML=shown.map(x=>'<tr title="'+esc((x.tls_version||'')+' '+(x.cert_subject||''))+'"><td>'+esc(x.target)+'</td><td>'+esc(x.ip+':'+x.port)+'</td><td>'+esc(x.sni||'--')+'</td><td><span class="'+(x.tcp?'ok':'bad')+'">TCP</span> <span class="'+(x.tls?'ok':'bad')+'">TLS</span> <span class="'+(x.http?'ok':'bad')+'">HTTP</span></td><td>'+(x.latency_ms||'')+'</td><td>'+esc(x.alpn||'--')+'</td><td><span class=pill>'+esc(x.network_classification)+'</span></td><td><span class=pill title="'+esc(x.provider_prefix||'')+'">'+esc(x.provider_id||'--')+'</span></td></tr>').join('');document.getElementById('analyticsText').textContent='Top score '+(rows[0]?.score||0)+' · network groups '+new Set(rows.map(x=>x.network_classification)).size+' · provider groups '+new Set(rows.map(x=>x.provider_id).filter(Boolean)).size;let h=document.getElementById('hex');{let c=document.createElement('div');c.className='cell '+(r.http?'good':r.tls||r.tcp?'mid':'bad');h.appendChild(c)}}
 </script></main></body></html>`
 	data := map[string]string{
 		"Targets": strings.Join(loadLines("assets/default_edges_extra.txt"), "\n"),
@@ -364,7 +371,7 @@ function render(r,s){rows.push(r);rows.sort((a,b)=>b.score-a.score||a.latency_ms
 func grafanaDashboard(w http.ResponseWriter, _ *http.Request) {
 	body, err := os.ReadFile(filepath.Clean("grafana-dashboard.json"))
 	if err != nil {
-		http.Error(w, "grafana dashboard not found", http.StatusNotFound)
+		writePublicError(w, http.StatusNotFound, "DASHBOARD_NOT_FOUND", "grafana dashboard not found", nil)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -374,7 +381,7 @@ func grafanaDashboard(w http.ResponseWriter, _ *http.Request) {
 func scan(w http.ResponseWriter, r *http.Request) {
 	var serial uint64
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		writePublicMethodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if activeControlPlane != nil {
@@ -390,10 +397,6 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	if activeControlPlane != nil {
 		activeControlPlane.setState("scan_running")
 	}
-	if err := req.validateCaps(); err != nil {
-		writePublicBadRequest(w, "scan request exceeds sidecar safety limits")
-		return
-	}
 	req.normalize()
 	routePlan, err := validateScanRoutePlugin(req.RoutePlugin)
 	if err != nil {
@@ -402,18 +405,23 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	}
 	globalBackoffNS.Store(0)
 	explicitTargets := len(req.Targets) > 0
+	skippedBefore := metricSafetySkipped.Load()
 	targets := expandTargets(req.Targets, req.MaxTargets, req.MaxCIDRHosts, req.RespectSafety)
+	expansionSafetySkipped := metricSafetySkipped.Load() - skippedBefore
 	if len(targets) == 0 && !explicitTargets {
 		targets = expandTargets(loadLines("assets/default_edges_extra.txt"), req.MaxTargets, req.MaxCIDRHosts, req.RespectSafety)
 	}
 	if len(targets) == 0 && explicitTargets {
-		http.Error(w, "no usable targets after CIDR/range expansion and safety filtering", http.StatusBadRequest)
+		writeScanInputError(w, "NO_USABLE_TARGETS", "no usable targets after CIDR/range expansion and safety filtering", map[string]any{
+			"submitted_target_count": len(req.Targets),
+			"respect_safety":         req.RespectSafety,
+		})
 		return
 	}
 	if len(req.SNIs) == 0 {
 		req.SNIs = loadLines("assets/default_snis.txt")
 	}
-	if len(targets) > req.MaxTargets {
+	if req.MaxTargets > 0 && len(targets) > req.MaxTargets {
 		targets = targets[:req.MaxTargets]
 	}
 	if req.Randomize {
@@ -422,6 +430,11 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	safetyPolicy := safetyPolicyObservation(req, len(targets))
 	warnings := scanWarnings(req, targets)
 	warnings = append(warnings, safetyPolicy.Warnings...)
+	expansionSummary := map[string]any{
+		"submitted_tokens": len(req.Targets),
+		"expanded_targets": len(targets),
+		"safety_skipped":   expansionSafetySkipped,
+	}
 
 	ctx, cancel := context.WithCancel(r.Context())
 	activeCancelMu.Lock()
@@ -448,9 +461,13 @@ func scan(w http.ResponseWriter, r *http.Request) {
 	jobsTotal := len(targets) * len(req.Ports)
 	st := stats{Total: jobsTotal, Batches: int(math.Ceil(float64(len(targets)) / float64(req.BatchSize)))}
 	if routePlan.Valid {
-		warnings = append(warnings, "Route status is attached to results; live route forwarding is used only when readiness observers report an attachable local or external route.")
+		if routePlan.HasRuntimeRoute() {
+			warnings = append(warnings, "Route plan includes an attachable runtime dial path; requested and observed route IDs are emitted per result.")
+		} else {
+			warnings = append(warnings, "Route validation is present, but this scan request does not include an attachable runtime route dial path.")
+		}
 	}
-	if err := enc.Encode(map[string]any{"type": "init", "total": st.Total, "batches": st.Batches, "warnings": warnings, "safety_policy": safetyPolicy, "route_plugin": routePlan.Public()}); err != nil {
+	if err := enc.Encode(map[string]any{"type": "init", "total": st.Total, "batches": st.Batches, "warnings": warnings, "safety_policy": safetyPolicy, "expansion": expansionSummary, "route_plugin": routePlan.Public()}); err != nil {
 		cancel()
 		return
 	}
@@ -486,12 +503,10 @@ func scan(w http.ResponseWriter, r *http.Request) {
 							case <-ctx.Done():
 								return
 							case <-time.After(time.Duration(backoffDelay)):
-								globalBackoffNS.Store(0)
 							}
 						}
 						waitRate(ctx, limiter, req.JitterMS)
-						res := probe(ctx, t, port, req, batchNo)
-						routePlan.ApplyToResult(&res)
+						res := probe(ctx, t, port, req, batchNo, routePlan)
 						select {
 						case <-ctx.Done():
 							return
@@ -531,10 +546,10 @@ func scan(w http.ResponseWriter, r *http.Request) {
 			if res.TCP {
 				metricTCPPass.Add(1)
 			}
-			if strings.Contains(strings.ToLower(res.Error), "timeout") {
+			if strings.HasSuffix(res.ErrorCode, "_TIMEOUT") || strings.Contains(strings.ToLower(res.Error), "timeout") {
 				metricTimeouts.Add(1)
 			}
-			if strings.Contains(strings.ToLower(res.Error), "reset") {
+			if strings.HasSuffix(res.ErrorCode, "_RESET") || strings.Contains(strings.ToLower(res.Error), "reset") {
 				metricResets.Add(1)
 			}
 			if res.Error != "" {
@@ -584,12 +599,12 @@ func metrics(w http.ResponseWriter, _ *http.Request) {
 
 func routingPlugins(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		writePublicMethodNotAllowed(w, http.MethodGet)
 		return
 	}
 	body, err := routingPluginsJSON()
 	if err != nil {
-		http.Error(w, "routing plugin registry unavailable", http.StatusInternalServerError)
+		writePublicError(w, http.StatusInternalServerError, "PLUGIN_REGISTRY_UNAVAILABLE", "routing plugin registry unavailable", nil)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -598,12 +613,12 @@ func routingPlugins(w http.ResponseWriter, r *http.Request) {
 
 func providerCorpusStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		writePublicMethodNotAllowed(w, http.MethodGet)
 		return
 	}
 	status, ok := providerCorpusStore.Status(time.Now())
 	if !ok {
-		http.Error(w, "provider corpus status unavailable", http.StatusNotFound)
+		writePublicError(w, http.StatusNotFound, "PROVIDER_CORPUS_UNAVAILABLE", "provider corpus status unavailable", nil)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -612,7 +627,7 @@ func providerCorpusStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 func validateRoutingPlugin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		writePublicMethodNotAllowed(w, http.MethodPost)
 		return
 	}
 	var cfg RoutingPluginConfig
@@ -647,12 +662,37 @@ func writePluginValidationError(w http.ResponseWriter, code, field, message stri
 }
 
 func writePublicBadRequest(w http.ResponseWriter, message string) {
-	http.Error(w, message, http.StatusBadRequest)
+	writePublicError(w, http.StatusBadRequest, "BAD_REQUEST", message, nil)
+}
+
+func writeScanInputError(w http.ResponseWriter, code, message string, details map[string]any) {
+	writePublicError(w, http.StatusBadRequest, code, message, details)
+}
+
+func writePublicMethodNotAllowed(w http.ResponseWriter, requiredMethod string) {
+	writePublicError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed", map[string]any{
+		"required_method": requiredMethod,
+	})
+}
+
+func writePublicError(w http.ResponseWriter, status int, code, message string, details map[string]any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	payload := map[string]any{
+		"schema_version": 1,
+		"error_code":     code,
+		"message":        message,
+	}
+	for key, value := range details {
+		payload[key] = value
+	}
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 type scanRoutePlan struct {
 	Valid      bool                          `json:"valid"`
 	Validation RoutingPluginConfigValidation `json:"validation,omitempty"`
+	RuntimeCfg *RouteConfig                  `json:"-"`
 }
 
 func validateScanRoutePlugin(cfg *RoutingPluginConfig) (scanRoutePlan, error) {
@@ -667,7 +707,12 @@ func validateScanRoutePlugin(cfg *RoutingPluginConfig) (scanRoutePlan, error) {
 	if err != nil {
 		return scanRoutePlan{}, err
 	}
-	return scanRoutePlan{Valid: true, Validation: validation}, nil
+	plan := scanRoutePlan{Valid: true, Validation: validation}
+	runtimeCfg, runtimeOK := buildRouteRuntimeConfig(*cfg, validation)
+	if runtimeOK {
+		plan.RuntimeCfg = runtimeCfg
+	}
+	return plan, nil
 }
 
 func (p scanRoutePlan) Public() any {
@@ -677,28 +722,150 @@ func (p scanRoutePlan) Public() any {
 	return p.Validation
 }
 
-func (p scanRoutePlan) ApplyToResult(res *result) {
+func (p scanRoutePlan) ApplyRequestedToResult(res *result) {
 	if res == nil || !p.Valid {
 		return
 	}
-	obs := p.Validation.Observation
 	res.RouteID = p.Validation.RouteID
-	if obs.ProviderID != nil {
-		res.RouteProviderID = *obs.ProviderID
+	res.RequestedRouteID = p.Validation.RouteID
+	res.RouteConfigReady = true
+	res.RouteDialerReady = p.HasRuntimeRoute()
+	res.RouteObserved = false
+	res.RouteReadinessSource = "validation_template"
+	if p.HasRuntimeRoute() {
+		res.RouteEvidenceState = "requested_runtime_pending_observation"
+	} else {
+		res.RouteEvidenceState = "requested_observer_only"
 	}
-	res.RouteBinding = p.Validation.RouteBinding
-	res.RouteProtocolMode = p.Validation.ProtocolMode
-	res.RouteAuthMode = p.Validation.AuthMode
-	res.RouteDNSPolicy = p.Validation.DNSPolicy
+}
+
+func (p scanRoutePlan) HasRuntimeRoute() bool {
+	return p.Valid && p.RuntimeCfg != nil
+}
+
+func (p scanRoutePlan) RouteConfigForProbe(timeoutMS int) RouteConfig {
+	cfg := *p.RuntimeCfg
+	cfg.Timeout = time.Duration(timeoutMS) * time.Millisecond
+	return cfg
+}
+
+func (p scanRoutePlan) ApplyObservedToResult(res *result, obs *RouteObservation) {
+	if res == nil || !p.Valid || obs == nil {
+		return
+	}
+	res.RouteUsed = strings.EqualFold(obs.Status, "success")
+	res.RouteConfigReady = true
+	res.RouteDialerReady = p.HasRuntimeRoute()
+	res.RouteObserved = true
+	res.ObservedRouteID = obs.RouteID
+	res.ObservedRouteType = string(obs.RouteType)
+	if res.RouteID == "" {
+		res.RouteID = p.Validation.RouteID
+	}
+	if res.RequestedRouteID == "" {
+		res.RequestedRouteID = p.Validation.RouteID
+	}
+	if res.RequestedRouteID != "" && res.ObservedRouteID != "" && res.RequestedRouteID != res.ObservedRouteID {
+		res.RouteMismatchCode = "ROUTE_REQUEST_OBSERVATION_MISMATCH"
+	}
+	if res.RouteUsed {
+		res.RouteEvidenceState = "observed_attached"
+	} else {
+		res.RouteEvidenceState = "observed_failed"
+	}
+	res.RouteID = obs.RouteID
+	res.RouteProviderID = obs.ProviderID
+	res.RouteBinding = obs.RouteBinding
+	res.RouteProtocolMode = obs.ProtocolMode
+	res.RouteAuthMode = obs.AuthMode
+	res.RouteDNSPolicy = obs.DNSPolicy
+	res.RouteReadiness = obs.Status
+	res.RouteReadinessSource = "observation"
+	if obs.ErrorCode != "" {
+		res.RouteErrorCode = obs.ErrorCode
+	}
 	res.RouteStrategy = p.Validation.RouteStrategy
 	res.RouteProviderChain = p.Validation.ProviderChain
 	res.RouteFrontingPolicy = p.Validation.FrontingPolicy
 	res.RouteLANSharing = p.Validation.LANSharing
 	res.RouteBeastMode = p.Validation.BeastMode
-	res.RouteReadiness = obs.ReadinessState
-	if obs.ErrorCode != nil {
-		res.RouteErrorCode = *obs.ErrorCode
+}
+
+func (p scanRoutePlan) ApplyRouteNotObserved(res *result) {
+	if res == nil || !p.Valid {
+		return
 	}
+	if res.RouteID == "" {
+		res.RouteID = p.Validation.RouteID
+	}
+	if res.RequestedRouteID == "" {
+		res.RequestedRouteID = p.Validation.RouteID
+	}
+	res.RouteUsed = false
+	res.RouteConfigReady = true
+	res.RouteDialerReady = p.HasRuntimeRoute()
+	res.RouteObserved = false
+	res.RouteReadiness = p.Validation.Observation.ReadinessState
+	res.RouteReadinessSource = "validation_template"
+	if p.HasRuntimeRoute() {
+		res.RouteEvidenceState = "requested_runtime_not_observed"
+		res.RouteMismatchCode = "ROUTE_REQUEST_NOT_OBSERVED"
+		if res.RouteErrorCode == "" {
+			res.RouteErrorCode = "ROUTE_REQUEST_NOT_OBSERVED"
+		}
+		return
+	}
+	res.RouteEvidenceState = "requested_observer_only"
+}
+
+func buildRouteRuntimeConfig(cfg RoutingPluginConfig, validation RoutingPluginConfigValidation) (*RouteConfig, bool) {
+	if !validation.Valid || !validation.Attachable {
+		return nil, false
+	}
+	endpoint := strings.TrimSpace(cfg.Endpoint)
+	if endpoint == "" {
+		return nil, false
+	}
+	if err := validateProxyEndpoint(endpoint); err != nil {
+		return nil, false
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Host == "" {
+		return nil, false
+	}
+	var routeType RouteType
+	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+	case "socks5":
+		routeType = RouteSOCKS5
+	case "http", "http-connect":
+		routeType = RouteHTTPConnect
+	default:
+		return nil, false
+	}
+	runtimeCfg := &RouteConfig{
+		RouteID:        cfg.RouteID,
+		Type:           routeType,
+		ProxyAddress:   parsed.Host,
+		DNSPolicy:      validation.DNSPolicy,
+		Timeout:        time.Second,
+		ProviderID:     firstNonEmpty(validation.PluginID, validation.PluginType),
+		RouteBinding:   validation.RouteBinding,
+		ProtocolMode:   validation.ProtocolMode,
+		AuthMode:       validation.AuthMode,
+		SplitTunnel:    validation.SplitTunnel,
+		UpstreamMode:   validation.UpstreamMode,
+		DownstreamMode: validation.DownstreamMode,
+	}
+	return runtimeCfg, true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func publicPluginValidationMessage(err error) string {
@@ -719,7 +886,7 @@ func publicPluginValidationMessage(err error) string {
 
 func exportNmap(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		writePublicMethodNotAllowed(w, http.MethodPost)
 		return
 	}
 	var rows []result
@@ -743,7 +910,7 @@ func exportNmap(w http.ResponseWriter, r *http.Request) {
 			addrType = "ipv6"
 		}
 		_, _ = fmt.Fprintf(w, `<host><status state="up"/><address addr="%s" addrtype="%s"/><ports><port protocol="tcp" portid="%d"><state state="%s"/><service name="%s" product="%s"/></port></ports></host>`+"\n",
-			xmlEscape(row.IP), addrType, row.Port, state, xmlEscape(row.SNI), xmlEscape(row.CDN))
+			xmlEscape(row.IP), addrType, row.Port, state, xmlEscape(row.SNI), xmlEscape(row.NetworkClassification))
 	}
 	_, _ = fmt.Fprintln(w, `</nmaprun>`)
 }
@@ -798,14 +965,14 @@ func (r *scanRequest) normalize() {
 	if !strings.HasPrefix(r.HTTPPath, "/") {
 		r.HTTPPath = "/" + r.HTTPPath
 	}
-	if r.MaxTargets <= 0 {
-		r.MaxTargets = 72000
+	if r.MaxTargets < 0 {
+		r.MaxTargets = 0
 	}
-	if r.MaxCIDRHosts <= 0 {
-		r.MaxCIDRHosts = min(r.MaxTargets, 4096)
+	if r.MaxCIDRHosts < 0 {
+		r.MaxCIDRHosts = 0
 	}
 	if r.BatchSize <= 0 {
-		r.BatchSize = min(12000, r.MaxTargets)
+		r.BatchSize = 12000
 	}
 	if r.RatePerSecond < 0 {
 		r.RatePerSecond = 0
@@ -817,43 +984,23 @@ func (r *scanRequest) normalize() {
 	r.TLSFingerprint = normalizeTLSFingerprint(r.TLSFingerprint)
 }
 
-func (r scanRequest) validateCaps() error {
-	if r.Threads > maxScanRequestThreads {
-		return errors.New("threads exceeds sidecar cap")
-	}
-	if r.TimeoutMS > maxScanRequestTimeoutMS {
-		return errors.New("timeout exceeds sidecar cap")
-	}
-	if r.BatchSize > maxScanRequestBatchSize {
-		return errors.New("batch size exceeds sidecar cap")
-	}
-	if r.MaxTargets > maxScanRequestMaxTargets {
-		return errors.New("max targets exceeds sidecar cap")
-	}
-	if r.MaxCIDRHosts > maxScanRequestMaxCIDR {
-		return errors.New("max cidr hosts exceeds sidecar cap")
-	}
-	if r.RatePerSecond > maxScanRequestRatePerSec {
-		return errors.New("rate exceeds sidecar cap")
-	}
-	if r.JitterMS > maxScanRequestJitterMS {
-		return errors.New("jitter exceeds sidecar cap")
-	}
-	return nil
-}
-
-func probe(ctx context.Context, target string, port int, req scanRequest, batchNo int) result {
-	res := result{Target: target, Port: port, BatchNumber: batchNo, CDN: "unknown"}
+func probe(ctx context.Context, target string, port int, req scanRequest, batchNo int, routePlan scanRoutePlan) result {
+	res := result{Target: target, Port: port, BatchNumber: batchNo, NetworkClassification: "unknown"}
+	routePlan.ApplyRequestedToResult(&res)
 	ips, sni, err := resolveTargetCandidates(target)
 	if len(ips) > 0 {
 		res.IP = ips[0]
 	}
 	res.SNI = sni
 	if err != nil {
+		res.ErrorCode = "DNS_RESOLUTION_FAILED"
 		res.Error = err.Error()
 		return res
 	}
 	snis := candidateSNIs(sni, req.SNIs, req.MultiSNI)
+	var lastErr error
+	var lastErrCode string
+	var observedRoute *RouteObservation
 
 	for _, ip := range ips {
 		if ctx.Err() != nil {
@@ -861,7 +1008,7 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 		}
 		res.IP = ip
 		res.applyProviderObservation(observeProvider(ip))
-		res.CDN = detectCDN(ip, sni, "")
+		res.NetworkClassification = detectNetworkClassification(ip, sni, "")
 		var tlsAttempted bool
 		var anyTCPOK bool
 		for _, candidateSNI := range snis {
@@ -871,9 +1018,16 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 			fingerprint := chooseTLSFingerprint(req.TLSFingerprint)
 			tlsAttempted = true
 			start := time.Now()
-			conn, tcpOK, tlsInfo, tlsOK := tlsProbeOpen(ctx, ip, port, candidateSNI, req.TimeoutMS, fingerprint, DPIObfuscationOptions{EnablePayloadSplitting: req.EnablePayloadSplitting, SplitByteBoundary: req.SplitByteBoundary})
+			conn, tcpOK, tlsInfo, tlsOK, tlsErr, routeObs := tlsProbeOpen(ctx, ip, port, candidateSNI, req.TimeoutMS, fingerprint, DPIObfuscationOptions{EnablePayloadSplitting: req.EnablePayloadSplitting, SplitByteBoundary: req.SplitByteBoundary}, routePlan)
 			if tcpOK {
 				anyTCPOK = true
+			}
+			if routeObs != nil {
+				observedRoute = routeObs
+			}
+			if tlsErr != nil {
+				lastErr = tlsErr
+				lastErrCode = classifyNetworkError(tlsErr, "tls")
 			}
 			if tlsOK {
 				res.TCP = true
@@ -886,9 +1040,9 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 				res.ALPN = tlsInfo.ALPN
 				res.TLSFingerprint = fingerprint
 				res.CertSubject = tlsInfo.Subject
-				res.CDN = detectCDN(ip, candidateSNI, tlsInfo.Subject)
+				res.NetworkClassification = detectNetworkClassification(ip, candidateSNI, tlsInfo.Subject)
 				if req.HTTPProbe {
-					res.HTTP, res.HTTPStatus, res.ServerHeader, res.CacheHeader, res.AltSvc, res.HTTP3Hint = httpProbeConn(ctx, conn, ip, candidateSNI, req.HTTPPath, req.TimeoutMS)
+					res.HTTP, res.HTTPStatus, res.ServerHeader, res.CacheHeader, res.AltSvc, res.HTTP3Hint, res.HTTPProbeCode = probeHTTPOverNegotiatedALPN(ctx, conn, ip, candidateSNI, req.HTTPPath, req.TimeoutMS, tlsInfo.ALPN)
 				}
 				_ = conn.Close()
 				break
@@ -899,11 +1053,26 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 		}
 		if !res.TLS && tlsAttempted && !anyTCPOK {
 			start := time.Now()
-			res.TCP = tcp(ctx, ip, port, req.TimeoutMS)
+			res.TCP, err = tcpWithError(ctx, ip, port, req.TimeoutMS, routePlan, &observedRoute)
 			res.LatencyMS = time.Since(start).Milliseconds()
+			if err != nil {
+				lastErr = err
+				lastErrCode = classifyNetworkError(err, "tcp")
+			}
 		}
 		if res.TLS || res.TCP {
 			break
+		}
+	}
+	if !res.TLS && !res.TCP && lastErr != nil {
+		res.ErrorCode = lastErrCode
+		res.Error = lastErr.Error()
+	}
+	if routePlan.Valid {
+		if observedRoute != nil {
+			routePlan.ApplyObservedToResult(&res, observedRoute)
+		} else {
+			routePlan.ApplyRouteNotObserved(&res)
 		}
 	}
 	res.Score = score(res)
@@ -977,17 +1146,35 @@ func uniqueInOrder(xs []string) []string {
 }
 
 func tcp(ctx context.Context, ip string, port int, timeoutMS int) bool {
-	d := net.Dialer{Timeout: time.Duration(timeoutMS) * time.Millisecond}
+	ok, _ := tcpWithError(ctx, ip, port, timeoutMS, scanRoutePlan{}, nil)
+	return ok
+}
+
+func tcpWithError(ctx context.Context, ip string, port int, timeoutMS int, routePlan scanRoutePlan, observedRoute **RouteObservation) (bool, error) {
 	network := "tcp4"
 	if strings.Contains(ip, ":") {
 		network = "tcp6"
 	}
-	conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip, strconv.Itoa(port)))
+	target := net.JoinHostPort(ip, strconv.Itoa(port))
+	if routePlan.HasRuntimeRoute() {
+		cfg := routePlan.RouteConfigForProbe(timeoutMS)
+		conn, obs, err := dialViaRoute(ctx, network, target, cfg)
+		if observedRoute != nil {
+			*observedRoute = &obs
+		}
+		if err != nil {
+			return false, err
+		}
+		_ = conn.Close()
+		return true, nil
+	}
+	d := net.Dialer{Timeout: time.Duration(timeoutMS) * time.Millisecond}
+	conn, err := d.DialContext(ctx, network, target)
 	if err != nil {
-		return false
+		return false, err
 	}
 	_ = conn.Close()
-	return true
+	return true, nil
 }
 
 type tlsInfo struct {
@@ -999,17 +1186,17 @@ type tlsInfo struct {
 }
 
 func tlsProbe(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, opts DPIObfuscationOptions) (tlsInfo, bool) {
-	conn, _, info, ok := tlsProbeOpen(ctx, ip, port, sni, timeoutMS, fingerprint, opts)
+	conn, _, info, ok, _, _ := tlsProbeOpen(ctx, ip, port, sni, timeoutMS, fingerprint, opts, scanRoutePlan{})
 	if conn != nil {
 		_ = conn.Close()
 	}
 	return info, ok
 }
 
-func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, opts DPIObfuscationOptions) (*tls.UConn, bool, tlsInfo, bool) {
-	conn, tcpOK, err := dialUTLS(ctx, ip, port, sni, timeoutMS, fingerprint, opts)
+func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, opts DPIObfuscationOptions, routePlan scanRoutePlan) (*tls.UConn, bool, tlsInfo, bool, error, *RouteObservation) {
+	conn, tcpOK, err, routeObs := dialUTLS(ctx, ip, port, sni, timeoutMS, fingerprint, opts, routePlan)
 	if err != nil {
-		return nil, tcpOK, tlsInfo{}, false
+		return nil, tcpOK, tlsInfo{}, false, err, routeObs
 	}
 	state := conn.ConnectionState()
 	info := tlsInfo{Version: tlsVersionName(state.Version), Cipher: cipherSuiteName(state.CipherSuite), ALPN: state.NegotiatedProtocol}
@@ -1034,13 +1221,13 @@ func tlsProbeOpen(ctx context.Context, ip string, port int, sni string, timeoutM
 	}
 	if ctx.Err() != nil {
 		_ = conn.Close()
-		return nil, true, info, false
+		return nil, true, info, false, ctx.Err(), routeObs
 	}
-	return conn, true, info, true
+	return conn, true, info, true, nil, routeObs
 }
 
 func httpProbe(ctx context.Context, ip string, port int, sni, path string, timeoutMS int, fingerprint string) (bool, int, string, string, string, bool) {
-	conn, _, err := dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"http/1.1"}, DPIObfuscationOptions{})
+	conn, _, err, _ := dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"http/1.1"}, DPIObfuscationOptions{}, scanRoutePlan{})
 	if err != nil {
 		return false, 0, "", "", "", false
 	}
@@ -1095,18 +1282,40 @@ func httpProbeConn(ctx context.Context, conn net.Conn, ip string, sni, path stri
 	return ctx.Err() == nil && err == nil && status > 0 && status < 500, status, server, cache, altSvc, strings.Contains(strings.ToLower(altSvc), "h3")
 }
 
-func dialUTLS(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, opts DPIObfuscationOptions) (*tls.UConn, bool, error) {
-	return dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"h2", "http/1.1"}, opts)
+func probeHTTPOverNegotiatedALPN(ctx context.Context, conn net.Conn, ip string, sni string, path string, timeoutMS int, negotiatedALPN string) (bool, int, string, string, string, bool, string) {
+	if strings.EqualFold(strings.TrimSpace(negotiatedALPN), "h2") {
+		return false, 0, "", "", "", false, "HTTP2_UNSUPPORTED_IN_PROBE"
+	}
+	httpOK, status, server, cache, altSvc, http3 := httpProbeConn(ctx, conn, ip, sni, path, timeoutMS)
+	return httpOK, status, server, cache, altSvc, http3, ""
 }
 
-func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, nextProtos []string, opts DPIObfuscationOptions) (*tls.UConn, bool, error) {
+func dialUTLS(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, opts DPIObfuscationOptions, routePlan scanRoutePlan) (*tls.UConn, bool, error, *RouteObservation) {
+	return dialUTLSWithALPN(ctx, ip, port, sni, timeoutMS, fingerprint, []string{"h2", "http/1.1"}, opts, routePlan)
+}
+
+func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, timeoutMS int, fingerprint string, nextProtos []string, opts DPIObfuscationOptions, routePlan scanRoutePlan) (*tls.UConn, bool, error, *RouteObservation) {
 	network := "tcp4"
 	if strings.Contains(ip, ":") {
 		network = "tcp6"
 	}
-	rawConn, err := DialObfuscatedSocket(ctx, network, net.JoinHostPort(ip, strconv.Itoa(port)), time.Duration(timeoutMS)*time.Millisecond, opts)
-	if err != nil {
-		return nil, false, err
+	target := net.JoinHostPort(ip, strconv.Itoa(port))
+	var rawConn net.Conn
+	var routeObs *RouteObservation
+	if routePlan.HasRuntimeRoute() {
+		cfg := routePlan.RouteConfigForProbe(timeoutMS)
+		conn, obs, err := dialViaRoute(ctx, network, target, cfg)
+		routeObs = &obs
+		if err != nil {
+			return nil, false, err, routeObs
+		}
+		rawConn = conn
+	} else {
+		conn, err := DialObfuscatedSocket(ctx, network, target, time.Duration(timeoutMS)*time.Millisecond, opts)
+		if err != nil {
+			return nil, false, err, nil
+		}
+		rawConn = conn
 	}
 	deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
 	_ = rawConn.SetDeadline(deadline)
@@ -1128,15 +1337,15 @@ func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, time
 	if err := conn.Handshake(); err != nil {
 		close(done)
 		_ = rawConn.Close()
-		return nil, true, err
+		return nil, true, err, routeObs
 	}
 	close(done)
 	if err := ctx.Err(); err != nil {
 		_ = conn.Close()
-		return nil, true, err
+		return nil, true, err, routeObs
 	}
 	_ = conn.SetDeadline(deadline)
-	return conn, true, nil
+	return conn, true, nil, routeObs
 }
 
 func normalizeTLSFingerprint(v string) string {
@@ -1218,7 +1427,7 @@ func score(r result) int {
 	if r.HTTP3Hint {
 		s += 6
 	}
-	if r.CDN != "" && r.CDN != "unknown" {
+	if r.NetworkClassification != "" && r.NetworkClassification != "unknown" {
 		s += 8
 	}
 	if r.TLSFingerprint != "" {
@@ -1236,10 +1445,38 @@ func score(r result) int {
 	return s
 }
 
-func detectCDN(ip, sni, cert string) string {
+func classifyNetworkError(err error, phase string) string {
+	if err == nil {
+		return ""
+	}
+	lower := strings.ToLower(err.Error())
+	prefix := "SCAN"
+	switch phase {
+	case "dns":
+		prefix = "DNS"
+	case "tcp":
+		prefix = "TCP_CONNECT"
+	case "tls":
+		prefix = "TLS_HANDSHAKE"
+	case "http":
+		prefix = "HTTP"
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), strings.Contains(lower, "timeout"):
+		return prefix + "_TIMEOUT"
+	case strings.Contains(lower, "reset"):
+		return prefix + "_RESET"
+	case strings.Contains(lower, "refused"):
+		return prefix + "_REFUSED"
+	default:
+		return prefix + "_FAILED"
+	}
+}
+
+func detectNetworkClassification(ip, sni, cert string) string {
 	if addr, err := netip.ParseAddr(ip); err == nil {
-		if cdn, ok := cdnIndex.MatchLongestPrefix(addr); ok {
-			return cdn
+		if classification, ok := networkClassificationIndex.MatchLongestPrefix(addr); ok {
+			return classification
 		}
 	}
 	host := strings.ToLower(sni + " " + cert)
@@ -1298,7 +1535,16 @@ func loadLines(name string) []string {
 	return unique(out)
 }
 
+func expansionBudget(n int) int {
+	if n <= 0 {
+		return math.MaxInt
+	}
+	return n
+}
+
 func expandTargets(raw []string, capCount int, maxCIDRHosts int, respectSafety bool) []string {
+	capCount = expansionBudget(capCount)
+	maxCIDRHosts = expansionBudget(maxCIDRHosts)
 	set := make(map[[16]byte]bool)
 	var out []string
 	for _, item := range raw {

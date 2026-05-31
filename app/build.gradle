@@ -32,6 +32,7 @@ android {
         targetSdk 35
         versionCode resolvedVersionCode
         versionName resolvedVersionName
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
 
     flavorDimensions 'artifactAbi'
@@ -124,6 +125,84 @@ dependencies {
     implementation "dev.rikka.shizuku:provider:${shizukuVersion}"
     implementation 'androidx.recyclerview:recyclerview:1.3.2'
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    androidTestImplementation 'androidx.test:core:1.6.1'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+}
+
+def sidecarGoDir = file("${rootDir}/go-sidecar")
+def sidecarAssetsRoot = file('src/main/assets/sidecar')
+def sidecarBinaryName = 'maybeedgescanner-sidecar'
+
+def resolveNdkClang(String triple, int apiLevel) {
+    def sdkRoot = System.getenv('ANDROID_HOME') ?: System.getenv('ANDROID_SDK_ROOT')
+    if (sdkRoot == null) {
+        def localProps = new Properties()
+        def localFile = rootProject.file('local.properties')
+        if (localFile.canRead()) {
+            localProps.load(localFile.newDataInputStream())
+            sdkRoot = localProps.getProperty('sdk.dir')
+        }
+    }
+    if (sdkRoot == null) return null
+    def ndkRoot = System.getenv('ANDROID_NDK_HOME') ?: System.getenv('ANDROID_NDK_ROOT')
+    if (ndkRoot == null) {
+        def ndkDir = new File(sdkRoot, 'ndk')
+        if (ndkDir.isDirectory()) {
+            def versions = ndkDir.listFiles()?.findAll { it.isDirectory() }?.sort { a, b -> b.name <=> a.name }
+            ndkRoot = versions ? versions[0].absolutePath : null
+        }
+    }
+    if (ndkRoot == null) return null
+    def hostTag = System.getProperty('os.name').toLowerCase(Locale.US).contains('windows') ? 'windows-x86_64'
+            : (System.getProperty('os.name').toLowerCase(Locale.US).contains('mac') ? 'darwin-x86_64' : 'linux-x86_64')
+    def candidate = new File(ndkRoot, "toolchains/llvm/prebuilt/${hostTag}/bin/${triple}${apiLevel}-clang")
+    if (System.getProperty('os.name').toLowerCase(Locale.US).contains('windows')) {
+        candidate = new File(candidate.parentFile, candidate.name + '.cmd')
+    }
+    return candidate.exists() ? candidate.absolutePath : null
+}
+
+tasks.register('packageSidecarBinaries') {
+    group = 'build'
+    description = 'Cross-compile Go sidecar for Android ABIs into src/main/assets/sidecar/. Set PACKAGE_SIDECAR=true to run before preBuild.'
+    onlyIf {
+        System.getenv('SKIP_SIDECAR_PACKAGE') != 'true'
+    }
+    doLast {
+        if (!sidecarGoDir.isDirectory()) {
+            throw new GradleException("Sidecar module not found: ${sidecarGoDir}")
+        }
+        def arm64Out = new File(sidecarAssetsRoot, "arm64-v8a/${sidecarBinaryName}")
+        arm64Out.parentFile.mkdirs()
+        exec {
+            workingDir sidecarGoDir
+            environment 'CGO_ENABLED', '0'
+            environment 'GOOS', 'android'
+            environment 'GOARCH', 'arm64'
+            commandLine 'go', 'build', '-trimpath', '-ldflags=-s -w', '-o', arm64Out.absolutePath, '.'
+        }
+        def armCc = resolveNdkClang('armv7a-linux-androideabi', 21)
+        if (armCc != null) {
+            def armOut = new File(sidecarAssetsRoot, "armeabi-v7a/${sidecarBinaryName}")
+            armOut.parentFile.mkdirs()
+            exec {
+                workingDir sidecarGoDir
+                environment 'CGO_ENABLED', '1'
+                environment 'GOOS', 'android'
+                environment 'GOARCH', 'arm'
+                environment 'CC', armCc
+                commandLine 'go', 'build', '-trimpath', '-ldflags=-s -w', '-o', armOut.absolutePath, '.'
+            }
+        } else {
+            logger.lifecycle('packageSidecarBinaries: skipped armeabi-v7a (NDK clang not found); arm64-v8a packaged')
+        }
+    }
+}
+
+if (System.getenv('PACKAGE_SIDECAR') == 'true') {
+    preBuild.dependsOn 'packageSidecarBinaries'
 }
 
 tasks.register('printResolvedVersion') {

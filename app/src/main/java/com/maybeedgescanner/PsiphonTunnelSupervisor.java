@@ -72,11 +72,21 @@ final class PsiphonTunnelSupervisor {
         readiness.beastMode = profile.beastMode;
         readiness.configRefPresent = profile.configRef.startsWith("ref:");
         readiness.packageName = profile.packageName;
+        readiness.configReady = readiness.configRefPresent || profile.profileRef.startsWith("ref:") || !profile.packageName.isEmpty();
+        readiness.sessionReady = readiness.configReady;
+        readiness.dialerReady = profile.endpoint.startsWith("http://") || profile.endpoint.startsWith("socks5://");
+        readiness.routeUsed = false;
         if ("external_vpn_apk".equals(profile.protocolMode) || "external_vpn".equals(profile.protocolMode)) {
             readiness.state = profile.profileRef.startsWith("ref:") || !profile.packageName.isEmpty()
                     ? "external_vpn_observation" : "needs_profile_or_package";
+            readiness.providerObserved = false;
+            readiness.listenerReady = false;
+            readiness.ready = false;
         } else {
             readiness.state = readiness.configRefPresent ? "needs_tunnel_core_process" : "needs_config_ref";
+            readiness.providerObserved = readiness.dialerReady;
+            readiness.listenerReady = false;
+            readiness.ready = readiness.dialerReady;
         }
         return readiness;
     }
@@ -89,10 +99,16 @@ final class PsiphonTunnelSupervisor {
         readiness.lastNotice = notice.length() > 180 ? notice.substring(0, 180) : notice;
         readiness.socksPort = extractPort(lower, "listeningsocksproxyport");
         readiness.httpProxyPort = extractPort(lower, "listeninghttpproxyport");
-        if (readiness.socksPort > 0 || readiness.httpProxyPort > 0) readiness.state = "proxy_listening";
+        readiness.listenerReady = readiness.socksPort > 0 || readiness.httpProxyPort > 0;
+        readiness.providerObserved = readiness.listenerReady;
+        readiness.dialerReady = readiness.listenerReady;
+        readiness.routeUsed = false;
+        readiness.ready = readiness.listenerReady;
+        if (readiness.listenerReady) readiness.state = "proxy_listening";
         if (lower.contains("failed") || lower.contains("error")) {
             readiness.state = "failed";
             readiness.errorCode = "PSIPHON_NOTICE_ERROR";
+            readiness.ready = false;
         }
         return readiness;
     }
@@ -124,8 +140,15 @@ final class PsiphonTunnelSupervisor {
         int socksPort;
         int httpProxyPort;
         boolean configRefPresent;
+        boolean configReady;
+        boolean sessionReady;
+        boolean providerObserved;
+        boolean listenerReady;
+        boolean dialerReady;
+        boolean routeUsed;
         boolean shareProxyOnLan;
         boolean beastMode;
+        boolean ready;
 
         String summary() {
             return "Psiphon route status\n" +
@@ -137,6 +160,12 @@ final class PsiphonTunnelSupervisor {
                     " | LAN share " + yesNo(shareProxyOnLan) + " | aggressive mode " + yesNo(beastMode) + "\n" +
                     "Local proxy: SOCKS " + (socksPort > 0 ? socksPort : "--") +
                     " | HTTP " + (httpProxyPort > 0 ? httpProxyPort : "--") +
+                    "\nReadiness gates: config " + yesNo(configReady) +
+                    " | session " + yesNo(sessionReady) +
+                    " | provider observed " + yesNo(providerObserved) +
+                    " | listener " + yesNo(listenerReady) +
+                    " | dialer " + yesNo(dialerReady) +
+                    " | route used " + yesNo(routeUsed) +
                     (lastNotice == null || lastNotice.isEmpty() ? "" : "\nLast notice: " + lastNotice) +
                     (errorCode == null || errorCode.isEmpty() ? "" : "\nIssue: " + errorCode);
         }

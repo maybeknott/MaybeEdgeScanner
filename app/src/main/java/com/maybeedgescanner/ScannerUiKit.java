@@ -110,12 +110,35 @@ final class ScannerUiKit {
 
     static Spinner spinner(Context context, String[] values, int fieldColor, int strokeColor) {
         Spinner spinner = new Spinner(context);
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(context, android.R.layout.simple_spinner_item, values);
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(context, android.R.layout.simple_spinner_item, values) {
+            @Override public View getView(int position, View convertView, android.view.ViewGroup parent) {
+                return styleSpinnerText(context, super.getView(position, convertView, parent), false);
+            }
+
+            @Override public View getDropDownView(int position, View convertView, android.view.ViewGroup parent) {
+                return styleSpinnerText(context, super.getDropDownView(position, convertView, parent), true);
+            }
+        };
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinner.setAdapter(adapter);
         spinner.setBackground(glassBg(context, fieldColor, strokeColor, false, false));
         spinner.setPadding(dp(context, 8), dp(context, 5), dp(context, 8), dp(context, 5));
+        spinner.setMinimumHeight(dp(context, 44));
         return spinner;
+    }
+
+    private static View styleSpinnerText(Context context, View view, boolean dropdown) {
+        if (view instanceof TextView) {
+            TextView text = (TextView) view;
+            text.setTextColor(Color.WHITE);
+            text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            text.setSingleLine(false);
+            text.setMaxLines(2);
+            text.setGravity(Gravity.CENTER_VERTICAL);
+            text.setPadding(dp(context, 10), dp(context, dropdown ? 11 : 8), dp(context, 10), dp(context, dropdown ? 11 : 8));
+            text.setBackgroundColor(dropdown ? Color.rgb(10, 24, 34) : Color.TRANSPARENT);
+        }
+        return view;
     }
 
     static LinearLayout box(Context context, String label, View child, int fill, int stroke, int sectionColor) {

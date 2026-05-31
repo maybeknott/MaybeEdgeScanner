@@ -31,6 +31,7 @@ final class WindscribeRouteObserver {
         observation.shareProxyOnLan = profile.shareProxyOnLan || "lan_shared".equals(profile.gatewayMode);
         observation.profileBacked = profile.profileRef.startsWith("ref:");
         observation.sessionBacked = session.sessionRefAvailable;
+        observation.configReady = observation.profileBacked || observation.sessionBacked || !profile.endpoint.isEmpty();
         try {
             ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
             Network active = cm == null ? null : cm.getActiveNetwork();
@@ -52,7 +53,12 @@ final class WindscribeRouteObserver {
         if ("local_proxy".equals(profile.protocolMode)) {
             observation.localProxyObserved = profile.endpoint.startsWith("http://") || profile.endpoint.startsWith("socks5://");
         }
-        observation.ready = observation.vpnObserved || observation.localProxyObserved || observation.profileBacked || observation.sessionBacked;
+        observation.providerObserved = observation.vpnObserved || observation.localProxyObserved;
+        observation.listenerReady = observation.localProxyObserved;
+        observation.sessionReady = observation.sessionBacked || observation.profileBacked;
+        observation.dialerReady = "local_proxy".equals(profile.protocolMode) && observation.listenerReady;
+        observation.routeUsed = false;
+        observation.ready = observation.dialerReady;
         return observation;
     }
 
@@ -76,15 +82,27 @@ final class WindscribeRouteObserver {
         boolean localProxyObserved;
         boolean profileBacked;
         boolean sessionBacked;
+        boolean configReady;
+        boolean sessionReady;
+        boolean providerObserved;
+        boolean listenerReady;
+        boolean dialerReady;
+        boolean routeUsed;
         boolean shareProxyOnLan;
         boolean ready;
         List<String> dnsServers = new ArrayList<>();
 
         String summary() {
             return "Windscribe route status\n" +
-                    "Status: " + (ready ? "ready to attach to scan" : "connect Windscribe, enter a profile/session ref, or provide a local proxy") + "\n" +
+                    "Status: " + (ready ? "dialer ready for attachable local proxy route" : "observer-only until local proxy listener is ready") + "\n" +
                     "Observed path: VPN " + yesNo(vpnObserved) + " | local proxy " + yesNo(localProxyObserved) +
                     " | profile ref " + yesNo(profileBacked) + " | session ref " + yesNo(sessionBacked) + "\n" +
+                    "Readiness gates: config " + yesNo(configReady) +
+                    " | session " + yesNo(sessionReady) +
+                    " | provider observed " + yesNo(providerObserved) +
+                    " | listener " + yesNo(listenerReady) +
+                    " | dialer " + yesNo(dialerReady) +
+                    " | route used " + yesNo(routeUsed) + "\n" +
                     "Mode: " + display(protocolMode) + " | binding " + display(routeBinding) + "\n" +
                     "Auth boundary: " + authBoundary + "\n" +
                     "DNS: " + display(dnsPolicy) + " | observed resolvers " + dnsServers + "\n" +

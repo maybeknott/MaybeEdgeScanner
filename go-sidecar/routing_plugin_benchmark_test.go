@@ -132,20 +132,21 @@ func BenchmarkRouteAttributionApplyToResult(b *testing.B) {
 	// keep registry referenced so the benchmark setup mirrors real validation lifetime.
 	_ = registry
 	base := result{
-		Target: "198.51.100.12",
-		IP:     "198.51.100.12",
-		Port:   443,
-		SNI:    "edge.example.test",
-		TCP:    true,
-		TLS:    true,
-		HTTP:   true,
-		CDN:    "akamai",
+		Target:                "198.51.100.12",
+		IP:                    "198.51.100.12",
+		Port:                  443,
+		SNI:                   "edge.example.test",
+		TCP:                   true,
+		TLS:                   true,
+		HTTP:                  true,
+		NetworkClassification: "akamai",
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		row := base
-		plan.ApplyToResult(&row)
+		plan.ApplyRequestedToResult(&row)
+		plan.ApplyRouteNotObserved(&row)
 	}
 }
 
@@ -174,11 +175,11 @@ func BenchmarkRouteAttributionApplyToResultBatch1K(b *testing.B) {
 	rows := make([]result, batchSize)
 	for i := 0; i < batchSize; i++ {
 		rows[i] = result{
-			Target: "203.0.113.10",
-			IP:     "203.0.113.10",
-			Port:   443,
-			SNI:    "scan.example.test",
-			CDN:    "cloudflare",
+			Target:                "203.0.113.10",
+			IP:                    "203.0.113.10",
+			Port:                  443,
+			SNI:                   "scan.example.test",
+			NetworkClassification: "cloudflare",
 		}
 	}
 	b.ReportAllocs()
@@ -186,7 +187,8 @@ func BenchmarkRouteAttributionApplyToResultBatch1K(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < batchSize; j++ {
-			plan.ApplyToResult(&rows[j])
+			plan.ApplyRequestedToResult(&rows[j])
+			plan.ApplyRouteNotObserved(&rows[j])
 		}
 	}
 }

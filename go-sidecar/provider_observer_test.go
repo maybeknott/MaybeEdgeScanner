@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestLegacyProviderObserverMatchesCloudflareIPv4(t *testing.T) {
+func TestBuiltinProviderObserverMatchesCloudflareIPv4(t *testing.T) {
 	if err := initProviderCorpusObserver(); err != nil {
 		t.Fatalf("initProviderCorpusObserver failed: %v", err)
 	}
@@ -15,7 +15,7 @@ func TestLegacyProviderObserverMatchesCloudflareIPv4(t *testing.T) {
 	}
 }
 
-func TestLegacyProviderObserverMatchesAkamaiIPv6(t *testing.T) {
+func TestBuiltinProviderObserverMatchesAkamaiIPv6(t *testing.T) {
 	if err := initProviderCorpusObserver(); err != nil {
 		t.Fatalf("initProviderCorpusObserver failed: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestLegacyProviderObserverMatchesAkamaiIPv6(t *testing.T) {
 	}
 }
 
-func TestLegacyProviderObserverUnknown(t *testing.T) {
+func TestBuiltinProviderObserverUnknown(t *testing.T) {
 	if err := initProviderCorpusObserver(); err != nil {
 		t.Fatalf("initProviderCorpusObserver failed: %v", err)
 	}
@@ -35,14 +35,14 @@ func TestLegacyProviderObserverUnknown(t *testing.T) {
 	}
 }
 
-func TestProviderObservationAppliesToResultJSONWithoutChangingLegacyCDN(t *testing.T) {
+func TestProviderObservationAppliesToResultJSONWithoutChangingNetworkClassification(t *testing.T) {
 	if err := initProviderCorpusObserver(); err != nil {
 		t.Fatalf("initProviderCorpusObserver failed: %v", err)
 	}
-	res := result{CDN: "cloudflare"}
+	res := result{NetworkClassification: "cloudflare"}
 	res.applyProviderObservation(observeProvider("104.16.1.1"))
-	if res.CDN != "cloudflare" {
-		t.Fatalf("legacy CDN changed: %q", res.CDN)
+	if res.NetworkClassification != "cloudflare" {
+		t.Fatalf("network classification changed: %q", res.NetworkClassification)
 	}
 	body, err := json.Marshal(res)
 	if err != nil {
@@ -55,7 +55,10 @@ func TestProviderObservationAppliesToResultJSONWithoutChangingLegacyCDN(t *testi
 	if payload["provider_id"] != "cloudflare" || payload["provider_prefix"] != "104.16.0.0/12" {
 		t.Fatalf("provider fields missing from JSON: %v", payload)
 	}
-	if payload["cdn"] != "cloudflare" {
-		t.Fatalf("legacy cdn field missing from JSON: %v", payload)
+	if payload["network_classification"] != "cloudflare" {
+		t.Fatalf("network_classification missing from JSON: %v", payload)
+	}
+	if _, ok := payload["cdn"]; ok {
+		t.Fatalf("retired cdn field should not be emitted: %v", payload)
 	}
 }

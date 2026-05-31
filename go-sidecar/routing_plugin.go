@@ -341,21 +341,32 @@ func validateRoutingPluginConfig(registry *RoutingPluginRegistry, cfg RoutingPlu
 	}
 	redacted = redactPluginDiagnostics(plugin, redacted)
 	warnings := []string{}
+	routeBinding := routeBindingForPlugin(plugin, cfg)
+	protocolMode := normalizedProtocolMode(plugin, cfg)
+	attachable := routeAttachable(plugin, cfg, routeBinding, protocolMode)
 	if plugin.PluginType == "psiphon" {
 		warnings = append(warnings,
 			"psiphon adapter is Edge-only; standard mode is tunnel-core/library supervision with operator-supplied config reference",
 			"external Psiphon APK/VPN mode can only label and test a user-connected route unless a documented control API exists",
 			"conduit/CDN-fronting/beast-mode fields are route establishment policy inputs and must be verified by notices, proxy readiness, and scan attribution",
-			"validated config is dry-run/readiness input until route attachment is enabled in scan requests",
 		)
+		if attachable {
+			warnings = append(warnings, "route attachment is enabled only when a validated local proxy endpoint is present; scan results must confirm observed route execution")
+		} else {
+			warnings = append(warnings, "validated config remains readiness-only until a local proxy endpoint is attachable in scan execution")
+		}
 	}
 	if plugin.PluginType == "windscribe" {
 		warnings = append(warnings,
 			"windscribe adapter is Edge-only and expects user-owned external VPN/proxy/OpenVPN/WireGuard profile references",
 			"Windscribe account login/session state remains Android-owned; Go receives only profile/session refs and route capabilities",
 			"provider chaining such as psiphon_over_windscribe or windscribe_over_psiphon requires explicit upstream route refs",
-			"validated config is dry-run/readiness input until route attachment is enabled in scan requests",
 		)
+		if attachable {
+			warnings = append(warnings, "route attachment is enabled only when a validated local proxy endpoint is present; scan results must confirm observed route execution")
+		} else {
+			warnings = append(warnings, "validated config remains readiness-only until a local proxy endpoint is attachable in scan execution")
+		}
 	}
 	readinessProbe := readinessProbeForPlugin(plugin, cfg)
 	caps := pluginCapabilities(plugin, cfg)
@@ -371,12 +382,12 @@ func validateRoutingPluginConfig(registry *RoutingPluginRegistry, cfg RoutingPlu
 		RouteType:      plugin.RouteType,
 		RemoteDNS:      cfg.RemoteDNS,
 		AuthMode:       normalizedAuthMode(plugin, cfg),
-		ProtocolMode:   normalizedProtocolMode(plugin, cfg),
+		ProtocolMode:   protocolMode,
 		DNSPolicy:      normalizedField(cfg, "dns_policy", "system_or_route_default"),
 		SplitTunnel:    normalizedField(cfg, "split_tunnel", "scanner_app_only"),
 		UpstreamMode:   normalizedField(cfg, "upstream_mode", "none"),
 		DownstreamMode: normalizedField(cfg, "downstream_mode", "scanner_to_route"),
-		RouteBinding:   routeBindingForPlugin(plugin, cfg),
+		RouteBinding:   routeBinding,
 		RouteStrategy:  normalizedRouteStrategy(plugin, cfg),
 		ConduitMode:    normalizedConduitMode(cfg),
 		ProviderChain:  normalizedProviderChain(cfg),
@@ -384,7 +395,7 @@ func validateRoutingPluginConfig(registry *RoutingPluginRegistry, cfg RoutingPlu
 		LANSharing:     lanSharingEnabled(cfg),
 		BeastMode:      beastModeEnabled(cfg),
 		DryRunOnly:     true,
-		Attachable:     false,
+		Attachable:     attachable,
 		ReadinessProbe: readinessProbe,
 		Capabilities:   caps,
 		Components:     providerComponents(plugin, cfg),
@@ -981,9 +992,10 @@ func routeObservationPreview(plugin RoutingPluginDescriptor, cfg RoutingPluginCo
 	if plugin.PluginType == "generic_proxy" {
 		networkPath = "proxy:generic:" + protocolMode
 	}
+	attachable := routeAttachable(plugin, cfg, routeBinding, protocolMode)
 	evidence := map[string]any{
 		"validation_dry_run_only": true,
-		"route_attachable":        false,
+		"route_attachable":        attachable,
 		"readiness_probe":         readinessProbeForPlugin(plugin, cfg),
 		"components":              providerComponents(plugin, cfg),
 		"required_observations":   routeObservations(plugin, cfg),
@@ -1053,6 +1065,29 @@ func routeObservationPreview(plugin RoutingPluginDescriptor, cfg RoutingPluginCo
 	}
 }
 
+func routeAttachable(plugin RoutingPluginDescriptor, cfg RoutingPluginConfig, routeBinding, protocolMode string) bool {
+	endpoint := strings.TrimSpace(cfg.Endpoint)
+	if endpoint == "" {
+		return false
+	}
+	if err := validateProxyEndpoint(endpoint); err != nil {
+		return false
+	}
+	if plugin.PluginID == "generic-proxy" {
+		return true
+	}
+	if plugin.PluginType == "psiphon" {
+		if routeBinding != "tunnel_core_local_proxy" {
+			return false
+		}
+		return allowedValue(protocolMode, "tunnel_core_supervised", "tunnel_core_library")
+	}
+	if plugin.PluginType == "windscribe" {
+		return routeBinding == "local_proxy_gateway" && protocolMode == "local_proxy"
+	}
+	return false
+}
+
 func validateRouteObservationTemplate(observation RouteObservationPreview) error {
 	if observation.SchemaVersion != 1 {
 		return fmt.Errorf("%w: route observation template schema_version must be 1", errPluginDescriptor)
@@ -1083,8 +1118,11 @@ func validateRouteObservationTemplate(observation RouteObservationPreview) error
 		return fmt.Errorf("%w: route observation template must set validation_dry_run_only=true", errPluginDescriptor)
 	}
 	attachable, ok := observation.Evidence["route_attachable"].(bool)
-	if !ok || attachable {
-		return fmt.Errorf("%w: route observation template must set route_attachable=false", errPluginDescriptor)
+	if !ok {
+		return fmt.Errorf("%w: route observation template must include route_attachable bool", errPluginDescriptor)
+	}
+	if observation.RouteType != "plugin" && !attachable {
+		return fmt.Errorf("%w: non-plugin route observation template must set route_attachable=true", errPluginDescriptor)
 	}
 	probe, ok := observation.Evidence["readiness_probe"].(string)
 	if !ok || strings.TrimSpace(probe) == "" {

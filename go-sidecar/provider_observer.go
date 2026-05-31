@@ -14,7 +14,7 @@ type ProviderObservation struct {
 }
 
 func initProviderCorpusObserver() error {
-	snapshot, err := BuildProviderSnapshot(legacyProviderCorpus())
+	snapshot, err := BuildProviderSnapshot(builtinProviderCorpus())
 	if err != nil {
 		return err
 	}
@@ -22,21 +22,21 @@ func initProviderCorpusObserver() error {
 	return nil
 }
 
-func legacyProviderCorpus() ProviderCorpus {
+func builtinProviderCorpus() ProviderCorpus {
 	return ProviderCorpus{
 		SchemaVersion:    1,
-		CorpusID:         "legacy-sidecar-cdn-prefixes-v1",
-		GeneratorVersion: "manual-legacy-sidecar-v1",
+		CorpusID:         "builtin-provider-prefixes-v1",
+		GeneratorVersion: "manual-builtin-provider-prefixes-v1",
 		GeneratedAt:      "2026-05-24T00:00:00Z",
 		FetchedAt:        "2026-05-24T00:00:00Z",
 		StaleAfter:       "2026-06-23T00:00:00Z",
-		Checksum:         "manual:legacy-sidecar-cdn-prefixes-v1",
+		Checksum:         "manual:builtin-provider-prefixes-v1",
 		Providers: []ProviderManifest{
 			{
 				ProviderID:    "cloudflare",
 				DisplayName:   "Cloudflare",
-				SourceURL:     "legacy://main.go/initCDNIndex",
-				SourceLicense: "legacy-sidecar",
+				SourceURL:     "builtin://provider_observer",
+				SourceLicense: "manual-builtin",
 				SourceKind:    "manual_fixture",
 				Confidence:    "medium",
 				Priority:      100,
@@ -46,8 +46,8 @@ func legacyProviderCorpus() ProviderCorpus {
 			{
 				ProviderID:    "fastly",
 				DisplayName:   "Fastly",
-				SourceURL:     "legacy://main.go/initCDNIndex",
-				SourceLicense: "legacy-sidecar",
+				SourceURL:     "builtin://provider_observer",
+				SourceLicense: "manual-builtin",
 				SourceKind:    "manual_fixture",
 				Confidence:    "medium",
 				Priority:      90,
@@ -57,8 +57,8 @@ func legacyProviderCorpus() ProviderCorpus {
 			{
 				ProviderID:    "cloudfront",
 				DisplayName:   "Amazon CloudFront",
-				SourceURL:     "legacy://main.go/initCDNIndex",
-				SourceLicense: "legacy-sidecar",
+				SourceURL:     "builtin://provider_observer",
+				SourceLicense: "manual-builtin",
 				SourceKind:    "manual_fixture",
 				Confidence:    "medium",
 				Priority:      80,
@@ -67,8 +67,8 @@ func legacyProviderCorpus() ProviderCorpus {
 			{
 				ProviderID:    "akamai",
 				DisplayName:   "Akamai",
-				SourceURL:     "legacy://main.go/initCDNIndex",
-				SourceLicense: "legacy-sidecar",
+				SourceURL:     "builtin://provider_observer",
+				SourceLicense: "manual-builtin",
 				SourceKind:    "manual_fixture",
 				Confidence:    "medium",
 				Priority:      70,
