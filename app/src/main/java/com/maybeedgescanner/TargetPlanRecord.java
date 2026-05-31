@@ -31,23 +31,33 @@ final class TargetPlanRecord {
 
     static TargetPlanRecord forRoutePairingProbe(String rawToken, String resolvedIp, int port, String sniHost,
                                                  boolean sniPairingEnabled, EdgeRouteProfile routeProfile) {
+        return forRoutePairingProbe(rawToken, resolvedIp, port, sniHost, sniPairingEnabled, routeProfile, null);
+    }
+
+    static TargetPlanRecord forRoutePairingProbe(String rawToken, String resolvedIp, int port, String sniHost,
+                                                 boolean sniPairingEnabled, EdgeRouteProfile routeProfile,
+                                                 TargetExpansionMeta expansion) {
         String routeId = routeProfile == null ? "direct" : clean(routeProfile.routeId);
         if (routeId.isEmpty()) routeId = "direct";
         String routeType = routeProfile == null ? "direct" : mapRouteType(routeProfile);
         String networkPath = routeProfile == null ? "direct" : networkPathFor(routeProfile);
-        return build("route_pairing", rawToken, resolvedIp, port, sniHost, sniPairingEnabled, routeId, routeType, networkPath);
+        return build("route_pairing", rawToken, resolvedIp, port, sniHost, sniPairingEnabled, routeId, routeType, networkPath, expansion);
     }
 
     private static TargetPlanRecord build(String productMode, String rawToken, String resolvedIp, int port, String sniHost,
-                                          boolean sniPairingEnabled, String routeId, String routeType, String networkPath) {
+                                          boolean sniPairingEnabled, String routeId, String routeType, String networkPath,
+                                          TargetExpansionMeta expansion) {
         String token = clean(rawToken);
         String ip = clean(resolvedIp);
         String sni = clean(sniHost);
-        String kind = normalizedKind(token);
+        if (expansion != null && expansion.hasExpansion()) {
+            token = expansion.parentToken;
+        }
+        String kind = expansion != null && expansion.hasExpansion() ? "ip" : normalizedKind(token);
         String sniMode = sniModeFor(kind, sni, sniPairingEnabled);
         String hostname = hostnameFor(token, kind);
         String httpHost = httpHostFor(kind, sni, sniPairingEnabled);
-        String dedupe = dedupeKey(productMode, ip, port, sni, httpHost, routeId);
+        String dedupe = dedupeKey(productMode, ip, port, sni, httpHost, routeId, expansion);
         String planId = stableId("plan", dedupe);
         String correlationId = stableId("corr", dedupe);
 
@@ -76,12 +86,7 @@ final class TargetPlanRecord {
             o.put("route_type", clean(routeType));
             o.put("network_path", clean(networkPath));
             o.put("safety_status", "allowed");
-            o.put("expansion_parent", JSONObject.NULL);
-            o.put("expansion_index", JSONObject.NULL);
-            o.put("expansion_total_theoretical", JSONObject.NULL);
-            o.put("expansion_total_capped", JSONObject.NULL);
-            o.put("expansion_skipped_count", JSONObject.NULL);
-            o.put("sampling_seed", JSONObject.NULL);
+            applyExpansionFields(o, expansion);
             o.put("dedupe_key", dedupe);
             o.put("result_correlation_id", correlationId);
         } catch (Exception ignored) {
@@ -171,8 +176,35 @@ final class TargetPlanRecord {
         return "plugin:" + plugin;
     }
 
+    private static String dedupeKey(String productMode, String ip, int port, String sni, String httpHost, String routeId,
+                                    TargetExpansionMeta expansion) {
+        String base = productMode + "|" + ip + "|" + port + "|sni=" + sni + "|host=" + (httpHost == null ? "" : httpHost) + "|route=" + routeId;
+        if (expansion != null && expansion.hasExpansion()) {
+            return base + "|parent=" + expansion.parentToken + "|idx=" + expansion.index;
+        }
+        return base;
+    }
+
+    private static void applyExpansionFields(JSONObject o, TargetExpansionMeta expansion) throws Exception {
+        if (expansion == null || !expansion.hasExpansion()) {
+            o.put("expansion_parent", JSONObject.NULL);
+            o.put("expansion_index", JSONObject.NULL);
+            o.put("expansion_total_theoretical", JSONObject.NULL);
+            o.put("expansion_total_capped", JSONObject.NULL);
+            o.put("expansion_skipped_count", JSONObject.NULL);
+            o.put("sampling_seed", JSONObject.NULL);
+            return;
+        }
+        o.put("expansion_parent", expansion.parentToken);
+        o.put("expansion_index", expansion.index);
+        o.put("expansion_total_theoretical", expansion.totalTheoretical);
+        o.put("expansion_total_capped", expansion.totalCapped);
+        o.put("expansion_skipped_count", expansion.skippedCount);
+        o.put("sampling_seed", expansion.samplingSeed.isEmpty() ? JSONObject.NULL : expansion.samplingSeed);
+    }
+
     private static String dedupeKey(String productMode, String ip, int port, String sni, String httpHost, String routeId) {
-        return productMode + "|" + ip + "|" + port + "|sni=" + sni + "|host=" + (httpHost == null ? "" : httpHost) + "|route=" + routeId;
+        return dedupeKey(productMode, ip, port, sni, httpHost, routeId, null);
     }
 
     private static String stableId(String prefix, String seed) {

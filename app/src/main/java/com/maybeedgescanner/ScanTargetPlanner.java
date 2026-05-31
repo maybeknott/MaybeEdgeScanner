@@ -77,23 +77,52 @@ final class ScanTargetPlanner {
         }
     }
 
-    static List<String> expandTargets(List<String> raw) {
-        return expandTargets(raw, Integer.MAX_VALUE);
+    static List<String> expandTargets(List<String> raw, int totalCap) {
+        ArrayList<String> out = new ArrayList<>();
+        for (ExpandedTarget entry : expandTargetsDetailed(raw, totalCap)) {
+            out.add(entry.address);
+        }
+        return out;
     }
 
-    static List<String> expandTargets(List<String> raw, int totalCap) {
-        LinkedHashSet<String> out = new LinkedHashSet<>();
+    static final class ExpandedTarget {
+        final String address;
+        final TargetExpansionMeta expansion;
+
+        ExpandedTarget(String address, TargetExpansionMeta expansion) {
+            this.address = address == null ? "" : address.trim();
+            this.expansion = expansion;
+        }
+    }
+
+    static List<ExpandedTarget> expandTargetsDetailed(List<String> raw, int totalCap) {
+        ArrayList<ExpandedTarget> out = new ArrayList<>();
         int cap = totalCap <= 0 ? Integer.MAX_VALUE : totalCap;
         for (String value : raw) {
             if (out.size() >= cap) break;
             String clean = cleanToken(value);
             if (clean.isEmpty()) continue;
             int remaining = cap - out.size();
-            if (clean.contains("/")) out.addAll(expandCidr(clean, remaining));
-            else if (clean.contains("-")) out.addAll(expandRange(clean, remaining));
-            else out.add(clean);
+            if (clean.contains("/")) {
+                appendExpanded(out, clean, expandCidr(clean, remaining), estimateCidrCount(clean, Integer.MAX_VALUE));
+            } else if (clean.contains("-")) {
+                appendExpanded(out, clean, expandRange(clean, remaining), estimateRangeCount(clean, Integer.MAX_VALUE));
+            } else {
+                out.add(new ExpandedTarget(clean, null));
+            }
         }
-        return new ArrayList<>(out);
+        return out;
+    }
+
+    private static void appendExpanded(ArrayList<ExpandedTarget> out, String parent, List<String> members, int theoretical) {
+        int capped = members.size();
+        for (int i = 0; i < members.size(); i++) {
+            out.add(new ExpandedTarget(members.get(i), TargetExpansionMeta.forExpandedMember(parent, i, theoretical, capped)));
+        }
+    }
+
+    static List<String> expandTargets(List<String> raw) {
+        return expandTargets(raw, Integer.MAX_VALUE);
     }
 
     static int estimateExpandedTargetCount(Collection<String> raw, int perEntryCap) {
@@ -235,5 +264,19 @@ final class ScanTargetPlanner {
 
     private static String longToIpv4(long value) {
         return ((value >> 24) & 255) + "." + ((value >> 16) & 255) + "." + ((value >> 8) & 255) + "." + (value & 255);
+    }
+
+    /** Distinct TargetPlan v1 plan_id count for a capped preview sample (E2 preview correlation). */
+    static int countDistinctPreviewPlans(Collection<String> previewTargets, int port, boolean sniPairingEnabled,
+                                         EdgeRouteProfile routeProfile, String sniHost) {
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        int safePort = port > 0 && port < 65536 ? port : 443;
+        String sni = sniHost == null ? "" : sniHost.trim();
+        for (String target : previewTargets) {
+            if (target == null || target.trim().isEmpty()) continue;
+            String ip = target.trim();
+            ids.add(TargetPlanRecord.forRoutePairingProbe(ip, ip, safePort, sni, sniPairingEnabled, routeProfile).planId());
+        }
+        return ids.size();
     }
 }

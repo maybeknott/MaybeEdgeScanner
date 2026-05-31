@@ -88,6 +88,14 @@ func boundedPhaseEvidence(err error) map[string]any {
 	return map[string]any{"detail": detail}
 }
 
+func appendTLSOutcomePhases(phases []PhaseResult, candidateSNI string, certVerified bool, elapsed int64) []PhaseResult {
+	phases = append(phases, newPhaseSuccess("tcp", elapsed))
+	if strings.TrimSpace(candidateSNI) != "" && !certVerified {
+		return append(phases, newPhaseFailure("tls", fmt.Errorf("hostname verification failed"), elapsed, "TLS_VERIFY_HOSTNAME_MISMATCH"))
+	}
+	return append(phases, newPhaseSuccess("tls", elapsed))
+}
+
 func httpPhaseFromALPN(alpn string) string {
 	if strings.Contains(strings.ToLower(alpn), "h2") {
 		return "http2"

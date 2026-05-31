@@ -51,6 +51,7 @@ func TestPublicAPIErrorEnvelopeParity(t *testing.T) {
 		{name: "scan method guard", method: http.MethodGet, path: "/api/scan", wantStatus: http.StatusMethodNotAllowed, wantError: "METHOD_NOT_ALLOWED", wantContains: `"required_method":"POST"`},
 		{name: "scan unauthorized", method: http.MethodPost, path: "/api/scan", wantStatus: http.StatusUnauthorized, wantError: "LOCAL_API_UNAUTHORIZED"},
 		{name: "scan bad request", method: http.MethodPost, path: "/api/scan", body: "{", useAuth: true, wantStatus: http.StatusBadRequest, wantError: "BAD_REQUEST"},
+		{name: "scan malformed json", method: http.MethodPost, path: "/api/scan", body: "{", useAuth: true, wantStatus: http.StatusBadRequest, wantError: "BAD_REQUEST"},
 		{name: "grafana dashboard bundled", method: http.MethodGet, path: "/grafana-dashboard.json", wantStatus: http.StatusOK, wantContains: `"title":`},
 		{name: "dns method guard", method: http.MethodGet, path: "/api/dns", wantStatus: http.StatusMethodNotAllowed, wantError: "METHOD_NOT_ALLOWED", wantContains: `"required_method":"POST"`},
 		{name: "dns unauthorized", method: http.MethodPost, path: "/api/dns", wantStatus: http.StatusUnauthorized, wantError: "LOCAL_API_UNAUTHORIZED"},

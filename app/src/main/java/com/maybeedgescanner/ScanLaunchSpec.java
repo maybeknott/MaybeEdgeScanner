@@ -6,10 +6,11 @@ import java.util.List;
 
 /** Immutable scan inputs staged before the foreground service starts workers. */
 final class ScanLaunchSpec implements Serializable {
-    private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 2L;
 
     final long generation;
     final ArrayList<String> targets;
+    final ArrayList<TargetExpansionMeta> targetExpansion;
     final ArrayList<String> snis;
     final ArrayList<Integer> ports;
     final ArrayList<Integer> workflowProfiles;
@@ -26,6 +27,7 @@ final class ScanLaunchSpec implements Serializable {
     private ScanLaunchSpec(
             long generation,
             List<String> targets,
+            List<TargetExpansionMeta> targetExpansion,
             List<String> snis,
             List<Integer> ports,
             List<Integer> workflowProfiles,
@@ -40,6 +42,13 @@ final class ScanLaunchSpec implements Serializable {
             EdgeRouteProfile routeProfile) {
         this.generation = generation;
         this.targets = new ArrayList<>(targets);
+        this.targetExpansion = new ArrayList<>();
+        if (targetExpansion != null) {
+            this.targetExpansion.addAll(targetExpansion);
+        }
+        while (this.targetExpansion.size() < this.targets.size()) {
+            this.targetExpansion.add(null);
+        }
         this.snis = new ArrayList<>(snis);
         this.ports = new ArrayList<>(ports);
         this.workflowProfiles = new ArrayList<>(workflowProfiles);
@@ -54,9 +63,15 @@ final class ScanLaunchSpec implements Serializable {
         this.routeProfile = routeProfile == null ? EdgeRouteProfile.direct() : routeProfile.copy();
     }
 
+    TargetExpansionMeta expansionAt(int index) {
+        if (index < 0 || index >= targetExpansion.size()) return null;
+        return targetExpansion.get(index);
+    }
+
     static ScanLaunchSpec create(
             long generation,
             List<String> targets,
+            List<TargetExpansionMeta> targetExpansion,
             List<String> snis,
             List<Integer> ports,
             List<Integer> workflowProfiles,
@@ -72,6 +87,7 @@ final class ScanLaunchSpec implements Serializable {
         return new ScanLaunchSpec(
                 generation,
                 targets,
+                targetExpansion,
                 snis,
                 ports,
                 workflowProfiles,

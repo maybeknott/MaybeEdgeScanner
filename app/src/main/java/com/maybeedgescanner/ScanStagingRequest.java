@@ -6,9 +6,10 @@ import java.util.List;
 
 /** UI-collected scan inputs staged by the foreground service (B1 slice 13). */
 final class ScanStagingRequest implements Serializable {
-    private static final long serialVersionUID = 2L;
+    private static final long serialVersionUID = 3L;
 
     final ArrayList<String> targets;
+    final ArrayList<TargetExpansionMeta> targetExpansion;
     final ArrayList<String> snis;
     final ArrayList<Integer> ports;
     final ArrayList<Integer> workflowProfiles;
@@ -28,6 +29,7 @@ final class ScanStagingRequest implements Serializable {
 
     ScanStagingRequest(
             List<String> targets,
+            List<TargetExpansionMeta> targetExpansion,
             List<String> snis,
             List<Integer> ports,
             List<Integer> workflowProfiles,
@@ -45,6 +47,13 @@ final class ScanStagingRequest implements Serializable {
             EdgeRouteProfile routeProfile,
             boolean planConfirmed) {
         this.targets = new ArrayList<>(targets);
+        this.targetExpansion = new ArrayList<>();
+        if (targetExpansion != null) {
+            this.targetExpansion.addAll(targetExpansion);
+        }
+        while (this.targetExpansion.size() < this.targets.size()) {
+            this.targetExpansion.add(null);
+        }
         this.snis = new ArrayList<>(snis);
         this.ports = new ArrayList<>(ports);
         this.workflowProfiles = new ArrayList<>(workflowProfiles);

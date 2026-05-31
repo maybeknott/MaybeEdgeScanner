@@ -41,7 +41,7 @@ final class ScanResultExporter {
         try {
             String extension = extensionForFormat(spec.format);
             File out = new File(context.getExternalFilesDir(null), spec.filePrefix + "_" + System.currentTimeMillis() + extension);
-            JSONObject meta = buildExportMeta(context, spec, sessionId, scanStartedAtEpochMs, rows.size());
+            JSONObject meta = buildExportMeta(context, spec, sessionId, scanStartedAtEpochMs, rows.size(), countDistinctPlanIds(rows));
             try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(out), StandardCharsets.UTF_8))) {
                 writeExport(writer, spec, meta, rows);
             }
@@ -144,18 +144,33 @@ final class ScanResultExporter {
     }
 
     static JSONObject buildExportMeta(Context context, ScanExportSpec spec, String sessionId,
-                                      long scanStartedAtEpochMs, int resultCount) throws Exception {
+                                      long scanStartedAtEpochMs, int resultCount, int planCount) throws Exception {
         JSONObject meta = new JSONObject();
         meta.put("schema_version", 1);
+        meta.put("storage_schema_version", ResultSessionStore.STORAGE_SCHEMA_VERSION);
         meta.put("app_version", appVersionName(context));
         meta.put("scan_session_id", sessionId);
         meta.put("product_mode", spec.productMode);
         meta.put("format", formatLabel(spec.format));
         meta.put("redaction_mode", spec.redactionMode);
         meta.put("result_count", resultCount);
+        if (planCount > 0) {
+            meta.put("plan_count", planCount);
+        }
         meta.put("generated_at_ms", System.currentTimeMillis());
         meta.put("scan_started_at_ms", scanStartedAtEpochMs);
         return meta;
+    }
+
+    private static int countDistinctPlanIds(List<MainActivity.Result> rows) throws Exception {
+        java.util.HashSet<String> ids = new java.util.HashSet<>();
+        for (MainActivity.Result row : rows) {
+            String id = row.json().optString("plan_id", "");
+            if (!id.isEmpty()) {
+                ids.add(id);
+            }
+        }
+        return ids.size();
     }
 
     private static JSONObject exportResultJson(MainActivity.Result row, String redactionMode) throws Exception {

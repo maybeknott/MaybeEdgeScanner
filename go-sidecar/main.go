@@ -112,7 +112,18 @@ type result struct {
 	Error                 string `json:"error,omitempty"`
 	FinalPhase            string        `json:"final_phase,omitempty"`
 	PhaseResults          []PhaseResult `json:"phase_results,omitempty"`
+	PlanID                string        `json:"plan_id,omitempty"`
+	ResultCorrelationID   string        `json:"result_correlation_id,omitempty"`
 	BatchNumber           int    `json:"batch_number"`
+}
+
+type probeOptions struct {
+	FixedIP             string
+	FixedSNI            string
+	SNIMode             string
+	PlanID              string
+	ResultCorrelationID string
+	RouteID             string
 }
 
 type stats struct {
@@ -391,7 +402,16 @@ func scan(w http.ResponseWriter, r *http.Request) {
 		defer activeControlPlane.setState("idle")
 	}
 	var req scanRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		writePublicBadRequest(w, "invalid scan request body")
+		return
+	}
+	if v1, ok := decodeSidecarScanRequestV1(bodyBytes); ok {
+		runPlanDrivenScan(w, r, v1)
+		return
+	}
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		writePublicBadRequest(w, "invalid scan request body")
 		return
 	}
@@ -508,7 +528,7 @@ func scan(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 						waitRate(ctx, limiter, req.JitterMS)
-						res := probe(ctx, t, port, req, batchNo, routePlan)
+						res := probe(ctx, t, port, req, batchNo, routePlan, probeOptions{})
 						select {
 						case <-ctx.Done():
 							return
@@ -961,12 +981,193 @@ func (r *scanRequest) normalize() {
 	r.TLSFingerprint = normalizeTLSFingerprint(r.TLSFingerprint)
 }
 
-func probe(ctx context.Context, target string, port int, req scanRequest, batchNo int, routePlan scanRoutePlan) result {
-	res := result{Target: target, Port: port, BatchNumber: batchNo, NetworkClassification: "unknown"}
+func planProbeOptions(item planWorkItem) probeOptions {
+	opts := item.probeOptions()
+	opts.RouteID = item.routeID
+	return opts
+}
+
+func runPlanDrivenScan(w http.ResponseWriter, r *http.Request, v1 sidecarScanRequestV1) {
+	metricScansStarted.Add(1)
+	if activeControlPlane != nil {
+		activeControlPlane.setState("scan_running")
+	}
+	req := v1.toScanRequest()
+	req.normalize()
+	globalBackoffNS.Store(0)
+	items := v1.planWorkItems()
+	if len(items) == 0 {
+		writeScanInputError(w, "NO_USABLE_PLANS", "no usable plans after safety filtering", map[string]any{
+			"submitted_plan_count": len(v1.Plans),
+		})
+		return
+	}
+	safetyPolicy := safetyPolicyObservation(req, len(items))
+	warnings := scanWarnings(req, nil)
+	warnings = append(warnings, safetyPolicy.Warnings...)
+	expansionSummary := map[string]any{
+		"submitted_plans": len(v1.Plans),
+		"usable_plans":    len(items),
+		"request_id":      v1.RequestID,
+		"product_mode":    v1.ProductMode,
+	}
+	runScanWorkItems(w, r, req, items, warnings, safetyPolicy, expansionSummary)
+}
+
+func runScanWorkItems(w http.ResponseWriter, r *http.Request, req scanRequest, items []planWorkItem, warnings []string, safetyPolicy SafetyPolicyObservation, expansionSummary map[string]any) {
+	var serial uint64
+	ctx, cancel := context.WithCancel(r.Context())
+	activeCancelMu.Lock()
+	if activeCancel != nil {
+		activeCancel()
+	}
+	activeSerial++
+	serial = activeSerial
+	activeCancel = cancel
+	activeCancelMu.Unlock()
+	defer func() {
+		activeCancelMu.Lock()
+		if activeSerial == serial {
+			activeCancel = nil
+		}
+		activeCancelMu.Unlock()
+		globalBackoffNS.Store(0)
+		cancel()
+	}()
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	flusher, _ := w.(http.Flusher)
+	enc := json.NewEncoder(w)
+	jobsTotal := len(items)
+	st := stats{Total: jobsTotal, Batches: int(math.Ceil(float64(len(items)) / float64(req.BatchSize)))}
+	if err := enc.Encode(map[string]any{"type": "init", "total": st.Total, "batches": st.Batches, "warnings": warnings, "safety_policy": safetyPolicy, "expansion": expansionSummary}); err != nil {
+		cancel()
+		return
+	}
+	flush(flusher)
+
+	var checked atomic.Int64
+	var working atomic.Int64
+	var tlsWorking atomic.Int64
+	var httpWorking atomic.Int64
+	var down atomic.Int64
+
+	limiter := newRateLimiter(req.RatePerSecond)
+	recentErrors := newErrorRingBuffer(64)
+	var routePlan scanRoutePlan
+	for start, batchNo := 0, 1; start < len(items) && ctx.Err() == nil; start, batchNo = start+req.BatchSize, batchNo+1 {
+		end := min(len(items), start+req.BatchSize)
+		jobs := make(chan planWorkItem)
+		results := make(chan result, resultBufferSize(req.BatchSize))
+		var wg sync.WaitGroup
+		for i := 0; i < min(req.Threads, end-start); i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for item := range jobs {
+					if ctx.Err() != nil {
+						return
+					}
+					if backoffDelay := globalBackoffNS.Load(); backoffDelay > 0 {
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(time.Duration(backoffDelay)):
+						}
+					}
+					waitRate(ctx, limiter, req.JitterMS)
+					res := probe(ctx, item.target, item.port, req, batchNo, routePlan, planProbeOptions(item))
+					select {
+					case <-ctx.Done():
+						return
+					case results <- res:
+					}
+				}
+			}()
+		}
+		go func() {
+			defer close(jobs)
+			for _, item := range items[start:end] {
+				select {
+				case <-ctx.Done():
+					return
+				case jobs <- item:
+				}
+			}
+		}()
+		go func() { wg.Wait(); close(results) }()
+		for res := range results {
+			c := int(checked.Add(1))
+			metricScanResults.Add(1)
+			if res.TCP || res.TLS || res.HTTP {
+				working.Add(1)
+			} else {
+				down.Add(1)
+			}
+			if res.TLS {
+				metricTLSPass.Add(1)
+				tlsWorking.Add(1)
+			}
+			if res.HTTP {
+				metricHTTPPass.Add(1)
+				httpWorking.Add(1)
+			}
+			if res.TCP {
+				metricTCPPass.Add(1)
+			}
+			if resultIndicatesTimeout(res) {
+				metricTimeouts.Add(1)
+			}
+			if resultIndicatesReset(res) {
+				metricResets.Add(1)
+			}
+			if res.Error != "" {
+				recentErrors.Append(res.Error)
+				trackAdaptiveBackoff(recentErrors.Snapshot(), req.RatePerSecond)
+			}
+			payloadStats := stats{
+				Total: st.Total, Checked: c, Working: int(working.Load()),
+				TLSWorking: int(tlsWorking.Load()), HTTPWorking: int(httpWorking.Load()),
+				Down: int(down.Load()), Batches: st.Batches, Batch: batchNo,
+			}
+			if err := enc.Encode(map[string]any{"type": "progress", "result": res, "stats": payloadStats}); err != nil {
+				cancel()
+				return
+			}
+			flush(flusher)
+		}
+	}
+	if ctx.Err() == nil {
+		metricScansCompleted.Add(1)
+	}
+	if err := enc.Encode(map[string]any{"type": "done", "stopped": ctx.Err() != nil}); err != nil {
+		cancel()
+		return
+	}
+	flush(flusher)
+}
+
+func probe(ctx context.Context, target string, port int, req scanRequest, batchNo int, routePlan scanRoutePlan, opts probeOptions) result {
+	res := result{Target: target, Port: port, BatchNumber: batchNo, NetworkClassification: "unknown", PlanID: opts.PlanID, ResultCorrelationID: opts.ResultCorrelationID}
 	routePlan.ApplyRequestedToResult(&res)
+	if strings.TrimSpace(opts.RouteID) != "" {
+		res.RouteID = opts.RouteID
+		res.RequestedRouteID = opts.RouteID
+	}
 	var phases []PhaseResult
 	dnsStart := time.Now()
-	ips, sni, err := resolveTargetCandidates(target)
+	var ips []string
+	var sni string
+	var err error
+	if strings.TrimSpace(opts.FixedIP) != "" {
+		ips = []string{strings.TrimSpace(opts.FixedIP)}
+		sni = strings.TrimSpace(opts.FixedSNI)
+		if opts.SNIMode == "ip_only_no_sni" {
+			sni = ""
+		}
+	} else {
+		ips, sni, err = resolveTargetCandidates(target)
+	}
 	if len(ips) > 0 {
 		res.IP = ips[0]
 	}
@@ -1025,12 +1226,7 @@ func probe(ctx context.Context, target string, port int, req scanRequest, batchN
 				res.TLSFingerprint = fingerprint
 				res.CertSubject = tlsInfo.Subject
 				res.NetworkClassification = detectNetworkClassification(ip, candidateSNI, tlsInfo.Subject)
-				phases = append(phases, newPhaseSuccess("tcp", elapsed))
-				if strings.TrimSpace(candidateSNI) != "" && !tlsInfo.Verified {
-					phases = append(phases, newPhaseFailure("tls", fmt.Errorf("hostname verification failed"), elapsed, "TLS_VERIFY_HOSTNAME_MISMATCH"))
-				} else {
-					phases = append(phases, newPhaseSuccess("tls", elapsed))
-				}
+				phases = appendTLSOutcomePhases(phases, candidateSNI, tlsInfo.Verified, elapsed)
 				if req.HTTPProbe {
 					httpStart := time.Now()
 					res.HTTP, res.HTTPStatus, res.ServerHeader, res.CacheHeader, res.AltSvc, res.HTTP3Hint, res.HTTPProbeCode = probeHTTPOverNegotiatedALPN(ctx, conn, ip, candidateSNI, req.HTTPPath, req.TimeoutMS, tlsInfo.ALPN)

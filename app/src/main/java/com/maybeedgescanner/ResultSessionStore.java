@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.UUID;
 
 final class ResultSessionStore<T> {
+    static final int STORAGE_SCHEMA_VERSION = 1;
+
     private final Object lock = new Object();
     private final ArrayList<T> rows = new ArrayList<>();
     private final String sessionId = UUID.randomUUID().toString();

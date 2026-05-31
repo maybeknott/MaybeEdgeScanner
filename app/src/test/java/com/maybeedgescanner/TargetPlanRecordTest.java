@@ -3,6 +3,7 @@ package com.maybeedgescanner;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 public class TargetPlanRecordTest {
@@ -16,5 +17,26 @@ public class TargetPlanRecordTest {
         assertEquals("route_pairing", plan.productMode());
         assertEquals("route-psiphon-android", plan.routeId());
         assertTrue(plan.dedupeKey().contains("route-psiphon-android"));
+    }
+
+    @Test
+    public void cidrExpansionPreservesParentAndRoute() {
+        EdgeRouteProfile route = EdgeRouteProfile.direct();
+        route.routeId = "route-direct";
+        TargetExpansionMeta expansion = TargetExpansionMeta.forExpandedMember("198.51.100.0/30", 2, 4, 2);
+        TargetPlanRecord plan = TargetPlanRecord.forRoutePairingProbe("198.51.100.3", "198.51.100.3", 443, "", false, route, expansion);
+        assertEquals("route-direct", plan.routeId());
+        assertTrue(plan.dedupeKey().contains("parent=198.51.100.0/30"));
+        assertTrue(plan.dedupeKey().contains("idx=2"));
+    }
+
+    @Test
+    public void expandedMembersHaveDistinctDedupeKeys() {
+        EdgeRouteProfile route = EdgeRouteProfile.direct();
+        TargetExpansionMeta first = TargetExpansionMeta.forExpandedMember("203.0.113.7-203.0.113.9", 0, 3, 3);
+        TargetExpansionMeta second = TargetExpansionMeta.forExpandedMember("203.0.113.7-203.0.113.9", 1, 3, 3);
+        TargetPlanRecord a = TargetPlanRecord.forRoutePairingProbe("203.0.113.7", "203.0.113.7", 443, "", false, route, first);
+        TargetPlanRecord b = TargetPlanRecord.forRoutePairingProbe("203.0.113.8", "203.0.113.8", 443, "", false, route, second);
+        assertNotEquals(a.dedupeKey(), b.dedupeKey());
     }
 }
