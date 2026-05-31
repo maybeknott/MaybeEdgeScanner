@@ -127,8 +127,8 @@ The user interface of MaybeEdgeScanner is programmatically generated in pure Jav
 ## 5. Go Sidecar Architecture & Internals
 
 The companion Go sidecar includes a robust suite of defenses:
-* **Radix-Tree Longest Prefix Matcher**: Inside `initCDNIndex`, IP subnets are parsed and indexed into a custom bitwise Radix-Tree. IP classifications utilize lock-free bitwise lookups, avoiding expensive string conversions.
-* **Lock-Free Duplicate Filters**: Evaluates IP targets as compact `map[[16]byte]bool` arrays rather than doing expensive string operations (`.String()`), slashing heap allocations.
+* **Route and provider prefix index**: IP subnets are parsed into a pointer-linked prefix helper protected by ordinary synchronization. It supports route-pairing and provider annotation; it is not lock-free, arena-backed, or proof of end-to-end provider execution.
+* **Compact dedup maps**: Evaluates IP targets as compact `map[[16]byte]bool` sets rather than repeated string operations (`.String()`), reducing heap churn during expansion. This is not a lock-free routing or prefix-index claim.
 * **Rolling Read/Write Deadlines**: Prevents slow-rate socket exhaustion by enforcing dynamic socket deadlines:
   ```go
   _ = conn.SetReadDeadline(time.Now().Add(750 * time.Millisecond))
