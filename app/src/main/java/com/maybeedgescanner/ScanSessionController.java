@@ -443,6 +443,7 @@ final class ScanSessionController {
         if (abandoned == null) return;
         requestStop();
         recordTerminalReason(ScanTerminalReason.PROCESS_LOST);
+        scanGeneration.set(Math.max(scanGeneration.get(), abandoned.generation));
         totalTargets = abandoned.plannedChecks;
         scanStartedAt = abandoned.startedAtEpochMs;
         ScanForegroundService.restoreProcessLostSession(abandoned);

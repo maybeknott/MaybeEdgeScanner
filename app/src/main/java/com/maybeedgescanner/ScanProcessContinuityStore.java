@@ -22,12 +22,12 @@ final class ScanProcessContinuityStore {
                 .putInt(KEY_PLANNED_CHECKS, Math.max(0, plannedChecks))
                 .putLong(KEY_STARTED_AT, System.currentTimeMillis())
                 .putString(KEY_WORKFLOW, workflow == null ? "" : workflow)
-                .apply();
+                .commit();
     }
 
     static void markTerminal(Context context) {
         if (context == null) return;
-        prefs(context).edit().clear().apply();
+        prefs(context).edit().clear().commit();
     }
 
     static AbandonedSession consumeAbandonedSession(Context context) {
@@ -39,7 +39,7 @@ final class ScanProcessContinuityStore {
                 prefs.getInt(KEY_PLANNED_CHECKS, 0),
                 prefs.getLong(KEY_STARTED_AT, 0L),
                 prefs.getString(KEY_WORKFLOW, ""));
-        prefs.edit().clear().apply();
+        prefs.edit().clear().commit();
         return abandoned;
     }
 
