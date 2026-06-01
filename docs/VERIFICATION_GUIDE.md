@@ -7,6 +7,8 @@ See also:
 * [Compatibility Matrix](./COMPATIBILITY_MATRIX.md)
 * [Provenance and License Status](./PROVENANCE_STATUS.md)
 * [SBOM Baseline](./SBOM_BASELINE.md)
+* [License Notices Baseline](./LICENSE_NOTICES.md)
+* [Source Offer Notes Baseline](./SOURCE_OFFER.md)
 
 ## 1. Prerequisites
 
