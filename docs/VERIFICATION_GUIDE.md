@@ -67,5 +67,13 @@ Before every release:
 1. Manually bump `APP_VERSION_NAME` and `APP_BASE_VERSION_CODE` in `gradle.properties`.
 2. Commit that version bump before building or tagging the release.
 3. Run `gradle --no-daemon :app:printResolvedVersion` and confirm the output is not the previous release number.
+4. Provide release signing material through either:
+   - `signing.properties` (`STORE_FILE`, `STORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`), or
+   - environment variables: `RELEASE_STORE_FILE`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`.
+5. Build release artifact:
+
+```bash
+gradle --no-daemon :app:assembleUniversalRelease
+```
 
 Release builds fail if the committed version properties are missing or the version name is not an explicit semantic version. APK filenames include version name and version code so new artifacts do not silently overwrite previous release outputs. Release jobs also verify signed APK outputs with `apksigner`, package sidecar artifacts, and publish benchmark/compliance assets.
