@@ -240,6 +240,25 @@ func TestSidecarReadAuthAcceptsBearerToken(t *testing.T) {
 	}
 }
 
+func TestSidecarReadAuthAcceptsHttpOnlyCookieForMetrics(t *testing.T) {
+	cp := mustNewSidecarControlPlane(t)
+	called := false
+	handler := cp.requireReadAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.AddCookie(&http.Cookie{Name: sidecarTokenCookieName, Value: cp.token})
+	handler(rec, req)
+	if !called {
+		t.Fatal("metrics read handler not called with valid sidecar cookie")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
 func TestSidecarReadAuthRequiresGetBeforeToken(t *testing.T) {
 	cp := mustNewSidecarControlPlane(t)
 	rec := httptest.NewRecorder()
@@ -287,6 +306,25 @@ func TestSidecarReadAuthAcceptsBearerTokenForHealth(t *testing.T) {
 	handler(rec, req)
 	if !called {
 		t.Fatal("health read handler not called with valid token")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestSidecarReadAuthAcceptsHttpOnlyCookieForHealth(t *testing.T) {
+	cp := mustNewSidecarControlPlane(t)
+	called := false
+	handler := cp.requireReadAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.AddCookie(&http.Cookie{Name: sidecarTokenCookieName, Value: cp.token})
+	handler(rec, req)
+	if !called {
+		t.Fatal("health read handler not called with valid sidecar cookie")
 	}
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status=%d, want %d", rec.Code, http.StatusNoContent)

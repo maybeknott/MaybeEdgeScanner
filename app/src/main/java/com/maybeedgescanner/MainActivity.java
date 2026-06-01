@@ -3525,13 +3525,7 @@ public class MainActivity extends Activity {
     }
 
     private String redactDiagnosticsOutput(String output) {
-        String redacted = output;
-        redacted = redacted.replaceAll("(?i)(public\\s*ip\\s*:[^\\n]*)", "Public IP: [REDACTED]");
-        redacted = redacted.replaceAll("(?i)(local\\s*ip\\s*:[^\\n]*)", "Local IP: [REDACTED]");
-        redacted = redacted.replaceAll("(?i)(wan\\s*ip\\s*:[^\\n]*)", "WAN IP: [REDACTED]");
-        redacted = redacted.replaceAll("(?i)(token|authorization|cookie)\\s*[:=]\\s*[^\\s\\n]+", "$1: [REDACTED]");
-        redacted = redacted.replaceAll("\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b", "[IPV4_REDACTED]");
-        return redacted;
+        return DiagnosticsRedactor.redact(output);
     }
 
     private void showClipboardDialog(String title, String content) {
