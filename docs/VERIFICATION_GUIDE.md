@@ -2,6 +2,11 @@
 
 This guide defines the minimum verification bar for local development and CI.
 
+See also:
+
+* [Compatibility Matrix](./COMPATIBILITY_MATRIX.md)
+* [Provenance and License Status](./PROVENANCE_STATUS.md)
+
 ## 1. Prerequisites
 
 * JDK 17
