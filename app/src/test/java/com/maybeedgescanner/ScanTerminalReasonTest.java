@@ -41,4 +41,9 @@ public class ScanTerminalReasonTest {
     public void failedStorageUsesFailedLifecycle() {
         assertEquals("failed", ScanTerminalReason.FAILED_STORAGE.lifecycleState);
     }
+
+    @Test
+    public void failedNoChecksUsesFailedLifecycle() {
+        assertEquals("failed", ScanTerminalReason.FAILED_NO_CHECKS.lifecycleState);
+    }
 }

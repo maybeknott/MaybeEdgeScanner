@@ -10,6 +10,7 @@ enum ScanTerminalReason {
     FAILED_SIDECAR("failed"),
     FAILED_PROVIDER("failed"),
     FAILED_STORAGE("failed"),
+    FAILED_NO_CHECKS("failed"),
     PROCESS_LOST("process_lost");
 
     final String lifecycleState;

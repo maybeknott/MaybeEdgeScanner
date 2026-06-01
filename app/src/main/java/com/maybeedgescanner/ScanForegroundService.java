@@ -251,7 +251,15 @@ public class ScanForegroundService extends Service {
                 SidecarLauncher.LaunchResult sidecar = SidecarLauncher.ensureRunning(this);
                 if (ScanSessionController.get().commitStagedLaunch()) {
                     ScanSessionSnapshot session = sessionSnapshot();
-                    applySnapshot("running", "0 / " + Math.max(0, session.plannedChecks) + " checks", 0);
+                    int plannedChecks = Math.max(0, session.plannedChecks);
+                    if (plannedChecks == 0) {
+                        ScanSessionController.get().requestStop();
+                        ScanSessionController.get().recordTerminalReason(ScanTerminalReason.FAILED_NO_CHECKS);
+                        applySnapshot("failed", "No checks planned. Select targets before starting.", 0);
+                        ScanSessionController.get().notifyUiObservers();
+                        break;
+                    }
+                    applySnapshot("running", "0 / " + plannedChecks + " checks", 0);
                     SidecarHeartbeatGuard.get().onScanStarted(this, sidecar.reachable);
                 } else if (command.stagingRequest == null) {
                     applySnapshot("failed", "No staged scan inputs", 0);
