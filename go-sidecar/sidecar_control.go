@@ -24,6 +24,8 @@ const (
 	defaultLicenseID       = "AGPL-3.0-or-later"
 )
 
+var randomHexGenerator = randomHex
+
 type sidecarControlPlane struct {
 	token       string
 	tokenHash   [32]byte
@@ -59,13 +61,13 @@ func newSidecarControlPlane() (*sidecarControlPlane, error) {
 		token = strings.TrimSpace(os.Getenv("MAYBESCANNER_SIDECAR_TOKEN"))
 	}
 	if token == "" {
-		generatedToken, err := randomHex(32)
+		generatedToken, err := randomHexGenerator(32)
 		if err != nil {
 			return nil, fmt.Errorf("sidecar token generation failed: %w", err)
 		}
 		token = generatedToken
 	}
-	nonce, err := randomHex(16)
+	nonce, err := randomHexGenerator(16)
 	if err != nil {
 		return nil, fmt.Errorf("sidecar nonce generation failed: %w", err)
 	}

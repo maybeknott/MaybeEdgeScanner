@@ -291,7 +291,7 @@ func TestScanRequestEmitsObservedRouteForAttachableWindscribeLocalProxy(t *testi
 	}
 }
 
-func TestScanRequestEmitsRequestedRouteWithoutObservedRouteClaimsWhenWindscribeIsObserverOnly(t *testing.T) {
+func TestScanRequestFailsWhenWindscribeRouteIsObserverOnly(t *testing.T) {
 	body := bytes.NewBufferString(`{
 		"targets":["192.0.2.1"],
 		"snis":["edge.example.test"],
@@ -311,21 +311,87 @@ func TestScanRequestEmitsRequestedRouteWithoutObservedRouteClaimsWhenWindscribeI
 	req := httptest.NewRequest(http.MethodPost, "/api/scan", body)
 	rec := httptest.NewRecorder()
 	scan(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusConflict {
 		t.Fatalf("scan status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	bodyText := rec.Body.String()
-	if !strings.Contains(bodyText, `"requested_route_id":"route-windscribe-wireguard"`) {
-		t.Fatalf("requested route id not attached to scan stream: %s", bodyText)
+	var envelope map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("invalid json error envelope: %v body=%s", err, rec.Body.String())
 	}
-	if !strings.Contains(bodyText, `"route_config_ready":true`) || !strings.Contains(bodyText, `"route_dialer_ready":false`) || !strings.Contains(bodyText, `"route_evidence_state":"requested_observer_only"`) {
-		t.Fatalf("observer-only route did not emit readiness evidence fields: %s", bodyText)
+	if envelope["error_code"] != "ROUTE_UNSUPPORTED" {
+		t.Fatalf("expected ROUTE_UNSUPPORTED, got %#v body=%s", envelope["error_code"], rec.Body.String())
 	}
-	if !strings.Contains(bodyText, `"route_observed":false`) || !strings.Contains(bodyText, `"route_readiness_source":"validation_template"`) {
-		t.Fatalf("observer-only route did not emit route observation-source evidence fields: %s", bodyText)
+	details, _ := envelope["details"].(map[string]any)
+	if details == nil {
+		t.Fatalf("expected details in route unsupported response: %s", rec.Body.String())
 	}
-	if strings.Contains(bodyText, `"observed_route_id":"route-windscribe-wireguard"`) || strings.Contains(bodyText, `"route_provider_id":"windscribe"`) {
-		t.Fatalf("scan emitted observed route claims without attachable runtime route: %s", bodyText)
+	if details["requested_route_id"] != "route-windscribe-wireguard" || details["plugin_id"] != "windscribe" {
+		t.Fatalf("unexpected route unsupported details: %#v", details)
+	}
+	if details["route_binding"] != "profile_backed_vpn_or_proxy" {
+		t.Fatalf("unexpected route binding in unsupported details: %#v", details)
+	}
+	if details["protocol_mode"] != "wireguard" {
+		t.Fatalf("unexpected protocol mode in unsupported details: %#v", details)
+	}
+	if details["attachable"] != false {
+		t.Fatalf("expected attachable=false in unsupported details: %#v", details)
+	}
+	readinessProbe, _ := details["readiness_probe"].(string)
+	if readinessProbe == "" || !strings.Contains(strings.ToLower(readinessProbe), "route observation") {
+		t.Fatalf("unexpected readiness probe in unsupported details: %#v", details)
+	}
+}
+
+func TestScanRequestFailsWhenPsiphonRouteIsNotReadyForRuntimeDialing(t *testing.T) {
+	body := bytes.NewBufferString(`{
+		"targets":["192.0.2.1"],
+		"snis":["edge.example.test"],
+		"ports":[443],
+		"respect_safety":false,
+		"max_targets":1,
+		"timeout_ms":1,
+		"route_plugin":{
+			"schema_version":1,
+			"route_id":"route-psiphon-supervised-no-endpoint",
+			"plugin_id":"psiphon",
+			"enabled":true,
+			"config_ref":"ref:psiphon-config",
+			"fields":{"mode":"tunnel_core_supervised"}
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/scan", body)
+	rec := httptest.NewRecorder()
+	scan(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("scan status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("invalid json error envelope: %v body=%s", err, rec.Body.String())
+	}
+	if envelope["error_code"] != "ROUTE_NOT_READY" {
+		t.Fatalf("expected ROUTE_NOT_READY, got %#v body=%s", envelope["error_code"], rec.Body.String())
+	}
+	details, _ := envelope["details"].(map[string]any)
+	if details == nil {
+		t.Fatalf("expected details in route not ready response: %s", rec.Body.String())
+	}
+	if details["requested_route_id"] != "route-psiphon-supervised-no-endpoint" || details["plugin_id"] != "psiphon" {
+		t.Fatalf("unexpected route not ready details: %#v", details)
+	}
+	if details["route_binding"] != "tunnel_core_local_proxy" {
+		t.Fatalf("unexpected route binding in not-ready details: %#v", details)
+	}
+	if details["protocol_mode"] != "tunnel_core_supervised" {
+		t.Fatalf("unexpected protocol mode in not-ready details: %#v", details)
+	}
+	if details["attachable"] != false {
+		t.Fatalf("expected attachable=false in not-ready details: %#v", details)
+	}
+	readinessProbe, _ := details["readiness_probe"].(string)
+	if readinessProbe == "" || !strings.Contains(strings.ToLower(readinessProbe), "loopback") {
+		t.Fatalf("unexpected readiness probe in not-ready details: %#v", details)
 	}
 }
 
@@ -368,6 +434,48 @@ func TestScanRequestEmitsObservedRouteForAttachableRuntimeRoute(t *testing.T) {
 	}
 }
 
+func TestScanRequestKeepsObservedRouteEvidenceWhenAttachableProxyConnectFails(t *testing.T) {
+	proxyListener := listenLocalTCP(t)
+	defer proxyListener.Close()
+	go func() {
+		for i := 0; i < 3; i++ {
+			serveOneHTTPConnect(t, proxyListener, http.StatusProxyAuthRequired)
+		}
+	}()
+	body := bytes.NewBufferString(`{
+		"targets":["198.51.100.10"],
+		"ports":[443],
+		"respect_safety":false,
+		"max_targets":1,
+		"timeout_ms":25,
+		"route_plugin":{
+			"schema_version":1,
+			"route_id":"route-generic-attach-fail",
+			"plugin_id":"generic-proxy",
+			"enabled":true,
+			"endpoint":"http://` + proxyListener.Addr().String() + `",
+			"fields":{"dns_policy":"remote"}
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/scan", body)
+	rec := httptest.NewRecorder()
+	scan(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scan status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	bodyText := rec.Body.String()
+	if !strings.Contains(bodyText, `"requested_route_id":"route-generic-attach-fail"`) ||
+		!strings.Contains(bodyText, `"observed_route_id":"route-generic-attach-fail"`) {
+		t.Fatalf("requested/observed route IDs missing after proxy failure: %s", bodyText)
+	}
+	if strings.Contains(bodyText, `"route_used":true`) || !strings.Contains(bodyText, `"route_evidence_state":"observed_failed"`) {
+		t.Fatalf("route failure evidence missing: %s", bodyText)
+	}
+	if !strings.Contains(bodyText, `"route_error_code":"PROXY_407_AUTH_REQUIRED"`) {
+		t.Fatalf("expected proxy auth failure code in route observation: %s", bodyText)
+	}
+}
+
 func TestProbeHTTPOverNegotiatedALPNSkipsHTTP11ForH2(t *testing.T) {
 	httpOK, status, server, cache, altSvc, http3, code := probeHTTPOverNegotiatedALPN(context.Background(), nil, "192.0.2.5", "", "/", 1000, "h2")
 	if httpOK || status != 0 || server != "" || cache != "" || altSvc != "" || http3 {
@@ -404,6 +512,96 @@ func TestProbeHTTPOverNegotiatedALPNExecutesHTTP11WhenAllowed(t *testing.T) {
 	}
 	if code != "" {
 		t.Fatalf("unexpected probe code %q", code)
+	}
+}
+
+func TestProbeHTTPOverNegotiatedALPNAcceptsEOFWithValidStatusLine(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reader := bufio.NewReader(server)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, _ = io.WriteString(server, "HTTP/1.1 200 OK")
+		_ = server.Close()
+	}()
+	httpOK, status, _, _, _, _, code := probeHTTPOverNegotiatedALPN(context.Background(), client, "192.0.2.6", "", "/", 1000, "http/1.1")
+	<-done
+	if !httpOK || status != 200 {
+		t.Fatalf("expected success with status 200, got ok=%v status=%d", httpOK, status)
+	}
+	if code != "" {
+		t.Fatalf("expected empty probe code for valid EOF status line, got %q", code)
+	}
+}
+
+func TestProbeHTTPOverNegotiatedALPNReturnsParseFailureForMalformedStatus(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reader := bufio.NewReader(server)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, _ = io.WriteString(server, "not-http\r\n\r\n")
+		_ = server.Close()
+	}()
+	httpOK, status, _, _, _, _, code := probeHTTPOverNegotiatedALPN(context.Background(), client, "192.0.2.7", "", "/", 1000, "http/1.1")
+	<-done
+	if httpOK || status != 0 {
+		t.Fatalf("expected malformed status failure, got ok=%v status=%d", httpOK, status)
+	}
+	if code != "HTTP_PARSE_FAILED" {
+		t.Fatalf("expected HTTP_PARSE_FAILED, got %q", code)
+	}
+}
+
+func TestProbeHTTPOverNegotiatedALPNFailsOnMidHeaderTruncation(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reader := bufio.NewReader(server)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, _ = io.WriteString(server, "HTTP/1.1 200 OK\r\nServer: test")
+		_ = server.Close()
+	}()
+	httpOK, _, _, _, _, _, code := probeHTTPOverNegotiatedALPN(context.Background(), client, "192.0.2.8", "", "/", 1000, "http/1.1")
+	<-done
+	if httpOK {
+		t.Fatal("expected failure on mid-header truncation")
+	}
+	if code != "HTTP_FAILED" {
+		t.Fatalf("expected HTTP_FAILED, got %q", code)
 	}
 }
 

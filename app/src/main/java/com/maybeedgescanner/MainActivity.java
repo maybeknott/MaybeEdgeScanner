@@ -145,7 +145,7 @@ public class MainActivity extends Activity {
     private EditText portsInput, pathInput, maxLatencyInput, resultLimitInput, networkFilterInput, certFilterInput, sniFilterInput, minQualityInput;
     private EditText shizukuKeyInput, shizukuValueInput, logFilterInput;
     private TextView diagnosticOutputView;
-    private Button runDiagnosticsButton;
+    private Button runDiagnosticsButton, diagnosticsCopyRedactedButton, diagnosticsCopyFullButton;
     private CheckBox multiSni, filterWorking, filterTlsHttp, bestPerIp, hideNoisyLogs, requireHttp, requireKnownNetwork, requireTls13, batteryFriendlyUi;
     private CheckBox diagnosticsOfflineMode, diagnosticsIncludePublicIp, exportPrivacyMode;
     private CheckBox communitySourceEnabled, akamaiSourceEnabled, cloudfrontSourceEnabled, fastlySourceEnabled, cloudflareSourceEnabled, otherNetworkSourceEnabled, defaultSniEnabled;
@@ -835,6 +835,14 @@ public class MainActivity extends Activity {
         formatMonospace(diagnosticOutputView, 11);
         diagnosticOutputView.setTextIsSelectable(true);
         diagCard.addView(diagnosticOutputView);
+        LinearLayout diagnosticsCopyRow = row();
+        diagnosticsCopyRedactedButton = button("Copy redacted", Color.rgb(34, 51, 66), Color.WHITE);
+        diagnosticsCopyFullButton = button("Copy full", Color.rgb(34, 51, 66), Color.WHITE);
+        diagnosticsCopyRedactedButton.setOnClickListener(v -> copyDiagnosticsRedacted());
+        diagnosticsCopyFullButton.setOnClickListener(v -> copyDiagnosticsFullWithConfirmation());
+        diagnosticsCopyRow.addView(diagnosticsCopyRedactedButton, weight());
+        diagnosticsCopyRow.addView(diagnosticsCopyFullButton, weight());
+        diagCard.addView(diagnosticsCopyRow);
         diagnosticsTab.addView(diagCard);
 
         diagnosticsTab.addView(section("Logs"));
@@ -3491,6 +3499,39 @@ public class MainActivity extends Activity {
             showClipboardDialog("Clipboard unavailable", content);
             toast("Clipboard unavailable; copy manually");
         }
+    }
+
+    private void copyDiagnosticsRedacted() {
+        String output = diagnosticOutputView == null ? "" : String.valueOf(diagnosticOutputView.getText());
+        if (output.trim().isEmpty()) {
+            toast("No diagnostics output to copy");
+            return;
+        }
+        copyToClipboardOrDialog("diagnostics redacted", redactDiagnosticsOutput(output));
+    }
+
+    private void copyDiagnosticsFullWithConfirmation() {
+        String output = diagnosticOutputView == null ? "" : String.valueOf(diagnosticOutputView.getText());
+        if (output.trim().isEmpty()) {
+            toast("No diagnostics output to copy");
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Copy full diagnostics")
+                .setMessage("Full diagnostics may contain network details. Continue?")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Copy full", (d, w) -> copyToClipboardOrDialog("diagnostics full", output))
+                .show();
+    }
+
+    private String redactDiagnosticsOutput(String output) {
+        String redacted = output;
+        redacted = redacted.replaceAll("(?i)(public\\s*ip\\s*:[^\\n]*)", "Public IP: [REDACTED]");
+        redacted = redacted.replaceAll("(?i)(local\\s*ip\\s*:[^\\n]*)", "Local IP: [REDACTED]");
+        redacted = redacted.replaceAll("(?i)(wan\\s*ip\\s*:[^\\n]*)", "WAN IP: [REDACTED]");
+        redacted = redacted.replaceAll("(?i)(token|authorization|cookie)\\s*[:=]\\s*[^\\s\\n]+", "$1: [REDACTED]");
+        redacted = redacted.replaceAll("\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b", "[IPV4_REDACTED]");
+        return redacted;
     }
 
     private void showClipboardDialog(String title, String content) {

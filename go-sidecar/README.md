@@ -1,4 +1,4 @@
-# MaybeScanner Go Sidecar
+# MaybeEdgeScanner Go Sidecar
 
 The sidecar is a standalone HTTP service for higher-volume target and DNS scans. It has no Python dependency and can run directly on a workstation, VPS, container host, or CI worker.
 
@@ -64,13 +64,23 @@ That image is cached with BuildKit `gha` and registry layers so dependency downl
 ## API
 
 - `GET /` returns the browser dashboard.
-- `GET /health` returns process health, goroutine count, and heap bytes.
-- `GET /metrics` returns Prometheus-style metrics.
+- `GET /health` returns process health, goroutine count, and heap bytes (authenticated local API read).
+- `GET /metrics` returns Prometheus-style metrics (authenticated local API read).
 - `GET /grafana-dashboard.json` returns the bundled Grafana dashboard.
 - `POST /api/scan` streams NDJSON scan results.
 - `POST /api/dns` streams NDJSON DNS resolver results.
 - `POST /api/stop` requests graceful cancellation/shutdown.
 - `POST /api/export/nmap` returns Nmap XML for compatible tooling.
+
+### Local API Auth Policy
+
+- Sidecar read and mutation endpoints require local sidecar auth; unauthenticated requests return `LOCAL_API_UNAUTHORIZED`.
+- Accepted auth paths are:
+  - `Authorization: Bearer <token>`
+  - `X-Sidecar-Token: <token>`
+  - HttpOnly API-scoped sidecar cookie (browser dashboard flow)
+- Query-string tokens are rejected.
+- Token verification compares fixed-length hashes in constant time; raw token values are never echoed in public error payloads.
 
 ## Scan Request
 
@@ -108,7 +118,7 @@ Invoke-WebRequest http://127.0.0.1:10808/api/dns `
 
 ## Prometheus And Grafana
 
-Prometheus scrape target:
+Prometheus scrape target (include an Authorization header or API cookie):
 
 ```yaml
 scrape_configs:

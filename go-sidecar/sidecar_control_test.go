@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -182,6 +183,24 @@ func TestSidecarMutationAuthRejectsLengthMismatchedToken(t *testing.T) {
 	}
 }
 
+func TestSidecarMutationAuthRejectsWrongSameLengthToken(t *testing.T) {
+	cp := mustNewSidecarControlPlane(t)
+	called := false
+	handler := cp.requireMutationAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/stop", nil)
+	req.Header.Set("X-Sidecar-Token", strings.Repeat("a", len(cp.token)))
+	handler(rec, req)
+	if called {
+		t.Fatal("handler called with wrong same-length token")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
 func TestSidecarReadAuthRejectsMissingToken(t *testing.T) {
 	cp := mustNewSidecarControlPlane(t)
 	called := false
@@ -232,5 +251,18 @@ func TestSidecarReadAuthRequiresGetBeforeToken(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"error_code":"METHOD_NOT_ALLOWED"`) || !strings.Contains(rec.Body.String(), `"required_method":"GET"`) {
 		t.Fatalf("expected structured method error, got %s", rec.Body.String())
+	}
+}
+
+func TestNewSidecarControlPlaneFailsClosedWhenRNGFails(t *testing.T) {
+	prev := randomHexGenerator
+	t.Cleanup(func() {
+		randomHexGenerator = prev
+	})
+	randomHexGenerator = func(int) (string, error) {
+		return "", errors.New("rng unavailable")
+	}
+	if _, err := newSidecarControlPlane(); err == nil {
+		t.Fatal("expected sidecar control plane init failure when RNG fails")
 	}
 }

@@ -255,13 +255,13 @@ func classifyHTTPConnectError(status int, err error) string {
 	}
 	switch status {
 	case http.StatusProxyAuthRequired:
-		return "PROXY_AUTH_REQUIRED"
+		return "PROXY_407_AUTH_REQUIRED"
 	case 0:
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			return "PROXY_TIMEOUT"
 		}
-		return "PROXY_MALFORMED_RESPONSE"
+		return "PROXY_CONNECT_MALFORMED_RESPONSE"
 	default:
 		return "PROXY_CONNECT_REJECTED"
 	}
