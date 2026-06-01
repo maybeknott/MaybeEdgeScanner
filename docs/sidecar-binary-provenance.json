@@ -1,0 +1,17 @@
+﻿{
+    "generated_utc":  "2026-06-01T14:04:38Z",
+    "repository":  "MaybeEdgeScanner",
+    "binary_count":  2,
+    "binaries":  [
+                     {
+                         "relative_path":  "app/src/main/assets/sidecar/arm64-v8a/maybeedgescanner-sidecar",
+                         "size_bytes":  11796776,
+                         "sha256":  "d379205c4b398a4b3252c08213d1d18dbee202de3f1ed5fbfe14e9d08babf42f"
+                     },
+                     {
+                         "relative_path":  "app/src/main/assets/sidecar/armeabi-v7a/maybeedgescanner-sidecar",
+                         "size_bytes":  11530200,
+                         "sha256":  "763862a62cf063085eae858872afd6b28b08066bff0625a530d94a15eb0e39d4"
+                     }
+                 ]
+}
