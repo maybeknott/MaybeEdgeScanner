@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"math"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/netip"
@@ -937,30 +936,6 @@ func exportNmap(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintln(w, `</nmaprun>`)
 }
 
-func xmlEscape(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch r {
-		case '&':
-			b.WriteString("&amp;")
-		case '<':
-			b.WriteString("&lt;")
-		case '>':
-			b.WriteString("&gt;")
-		case '"':
-			b.WriteString("&quot;")
-		case '\'':
-			b.WriteString("&apos;")
-		default:
-			if r == '\t' || r == '\n' || r == '\r' || r >= 0x20 {
-				b.WriteRune(r)
-			} else {
-				b.WriteRune('?')
-			}
-		}
-	}
-	return b.String()
-}
 
 func (r *scanRequest) normalize() {
 	r.Targets = unique(r.Targets)
@@ -1593,108 +1568,9 @@ func dialUTLSWithALPN(ctx context.Context, ip string, port int, sni string, time
 	return conn, true, nil, routeObs
 }
 
-func normalizeTLSFingerprint(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "", "auto", "rotate":
-		return "rotate"
-	case "chrome", "firefox", "ios", "randomized", "randomized-no-alpn":
-		return strings.ToLower(strings.TrimSpace(v))
-	default:
-		return "rotate"
-	}
-}
 
-func chooseTLSFingerprint(mode string) string {
-	if mode != "rotate" {
-		return mode
-	}
-	choices := []string{"chrome", "firefox", "randomized"}
-	return choices[rand.Intn(len(choices))]
-}
 
-func clientHelloID(fingerprint string) tls.ClientHelloID {
-	switch fingerprint {
-	case "chrome":
-		return tls.HelloChrome_Auto
-	case "firefox":
-		return tls.HelloFirefox_Auto
-	case "ios":
-		return tls.HelloIOS_Auto
-	case "randomized-no-alpn":
-		return tls.HelloRandomizedNoALPN
-	default:
-		return tls.HelloRandomizedALPN
-	}
-}
 
-func cipherSuiteName(id uint16) string {
-	switch id {
-	case 0x1301:
-		return "TLS_AES_128_GCM_SHA256"
-	case 0x1302:
-		return "TLS_AES_256_GCM_SHA384"
-	case 0x1303:
-		return "TLS_CHACHA20_POLY1305_SHA256"
-	case 0xc02b:
-		return "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
-	case 0xc02f:
-		return "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
-	case 0xc02c:
-		return "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
-	case 0xc030:
-		return "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
-	case 0xcca9:
-		return "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305"
-	case 0xcca8:
-		return "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"
-	default:
-		return fmt.Sprintf("0x%04x", id)
-	}
-}
-
-type errorRingBuffer struct {
-	storage []string
-	cursor  int
-	full    bool
-}
-
-func newErrorRingBuffer(capacity int) *errorRingBuffer {
-	if capacity < 1 {
-		capacity = 1
-	}
-	return &errorRingBuffer{storage: make([]string, capacity)}
-}
-
-func (rb *errorRingBuffer) Append(errText string) {
-	if rb == nil || len(rb.storage) == 0 {
-		return
-	}
-	rb.storage[rb.cursor] = errText
-	rb.cursor = (rb.cursor + 1) % len(rb.storage)
-	if rb.cursor == 0 {
-		rb.full = true
-	}
-}
-
-func (rb *errorRingBuffer) Snapshot() []string {
-	if rb == nil || len(rb.storage) == 0 {
-		return nil
-	}
-	count := rb.cursor
-	start := 0
-	if rb.full {
-		count = len(rb.storage)
-		start = rb.cursor
-	}
-	out := make([]string, 0, count)
-	for i := 0; i < count; i++ {
-		errText := rb.storage[(start+i)%len(rb.storage)]
-		if errText != "" {
-			out = append(out, errText)
-		}
-	}
-	return out
-}
 
 
 
