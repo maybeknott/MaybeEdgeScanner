@@ -12,6 +12,7 @@ public class DiagnosticsRedactorTest {
         String input = "Public IP: 203.0.113.9\n"
                 + "Local IP: 192.168.1.10\n"
                 + "WAN IP: 198.51.100.22\n"
+                + "Resolver AAAA: 2606:4700:4700::1111\n"
                 + "Authorization: Bearer abc123\n"
                 + "cookie=secret-cookie\n";
 
@@ -25,8 +26,10 @@ public class DiagnosticsRedactorTest {
         assertFalse(out.contains("203.0.113.9"));
         assertFalse(out.contains("192.168.1.10"));
         assertFalse(out.contains("198.51.100.22"));
+        assertFalse(out.contains("2606:4700:4700::1111"));
         assertFalse(out.contains("abc123"));
         assertFalse(out.contains("secret-cookie"));
+        assertTrue(out.contains("[IPV6_REDACTED]"));
     }
 
     @Test
@@ -35,4 +38,3 @@ public class DiagnosticsRedactorTest {
         assertTrue(DiagnosticsRedactor.redact("").isEmpty());
     }
 }
-

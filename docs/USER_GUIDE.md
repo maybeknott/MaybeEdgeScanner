@@ -16,7 +16,7 @@ If you are planning to perform massive, enterprise-scale network audits from a d
 ```bash
 ./sidecar
 ```
-Open your local browser to `http://127.0.0.1:10808` to access the responsive HTML control panel, Prometheus metrics (`/metrics`), and Grafana dashboard assets.
+Open your local browser to `http://127.0.0.1:10808` to access the responsive HTML control panel, authenticated Prometheus metrics (`/metrics`), and Grafana dashboard assets. Local API reads and mutations require sidecar auth credentials (Bearer header, `X-Sidecar-Token`, or the HttpOnly sidecar cookie).
 
 ---
 
@@ -59,6 +59,7 @@ System health and low-level adjustments:
 * **Live System Logs & Search**: View runtime engine logs. Features a real-time, case-insensitive log filter/search widget allowing rapid string lookup across large scrolling logs without UI stutter.
 * **Automated Network Diagnostic Suite**: Clickable diagnostic test runner executing in a dedicated background thread. Tests VPN/Proxy transport indicators, evaluates multi-domain DNS resolution latency (e.g. `one.one.one.one`, `dns.google`, `aparat.com`), tests raw TCP connect speed (port 443), validates secure HTTPS protocol negotiations, and dumps JVM heap allocations.
 * **Privileged Shizuku Controls**: Direct, guarded access to mobile baseband configurations.
+* **Privacy-safe diagnostics copy**: Use **Copy redacted** for ordinary support sharing; use **Copy full** only after confirmation when complete network detail sharing is intentional.
 
 ---
 
