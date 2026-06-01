@@ -19,6 +19,10 @@ Last updated: 2026-06-01
 - Record commit/tag + retrieval date for any external source-derived behavior claims.
 - Maintain claim registry entries for advanced transport features until implemented and benchmarked.
 
+## Baseline Artifact Present
+
+- Pre-release dependency baseline: [SBOM_BASELINE.md](./SBOM_BASELINE.md).
+
 ## Verified Security/Policy Baseline
 
 - Local API query-token auth is removed.

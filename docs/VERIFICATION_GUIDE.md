@@ -6,6 +6,7 @@ See also:
 
 * [Compatibility Matrix](./COMPATIBILITY_MATRIX.md)
 * [Provenance and License Status](./PROVENANCE_STATUS.md)
+* [SBOM Baseline](./SBOM_BASELINE.md)
 
 ## 1. Prerequisites
 
