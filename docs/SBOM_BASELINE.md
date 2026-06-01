@@ -3,19 +3,23 @@
 Last generated: 2026-06-01
 
 This is a reproducible dependency baseline artifact for pre-release review.
-It is **not** a full SPDX/CycloneDX export yet.
+It now includes machine-readable pre-release exports under `docs/sbom/`.
 
 ## Generation Commands
 
 ```bash
-cd go-sidecar
-go list -m all
+powershell -ExecutionPolicy Bypass -File .\scripts\generate-sbom-artifacts.ps1
 ```
 
-```bash
-cd app
-# dependency declarations extracted from app/build.gradle
-```
+Script outputs:
+
+- `docs/sbom/cyclonedx.pre-release.json`
+- `docs/sbom/spdx.pre-release.json`
+
+Data sources in the script:
+
+- `go-sidecar`: `go list -m all`
+- `app/build.gradle`: declared dependency coordinates
 
 ## Go Sidecar Modules
 
@@ -56,4 +60,4 @@ cd app
 
 ## Remaining Step for Stable Release
 
-- Generate and archive machine-readable SPDX or CycloneDX artifacts from the exact release build outputs.
+- Regenerate SPDX/CycloneDX artifacts from exact signed release build outputs and attach them to release evidence.

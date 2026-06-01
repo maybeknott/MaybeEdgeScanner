@@ -77,4 +77,10 @@ Before every release:
 gradle --no-daemon :app:assembleUniversalRelease
 ```
 
+6. Generate pre-release SBOM artifacts:
+
+```bash
+powershell -ExecutionPolicy Bypass -File .\scripts\generate-sbom-artifacts.ps1
+```
+
 Release builds fail if the committed version properties are missing or the version name is not an explicit semantic version. APK filenames include version name and version code so new artifacts do not silently overwrite previous release outputs. Release jobs also verify signed APK outputs with `apksigner`, package sidecar artifacts, and publish benchmark/compliance assets.

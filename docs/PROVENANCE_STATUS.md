@@ -14,7 +14,7 @@ Last updated: 2026-06-01
 
 ## Release-Readiness Provenance Requirements (Open)
 
-- Produce formal SBOM artifacts per release build (SPDX or CycloneDX).
+- Produce release-grade SBOM artifacts from exact signed outputs (SPDX or CycloneDX).
 - Attach dependency license inventory aligned to shipped binaries, not just repository references.
 - Record commit/tag + retrieval date for any external source-derived behavior claims.
 - Maintain claim registry entries for advanced transport features until implemented and benchmarked.
@@ -22,6 +22,7 @@ Last updated: 2026-06-01
 ## Baseline Artifact Present
 
 - Pre-release dependency baseline: [SBOM_BASELINE.md](./SBOM_BASELINE.md).
+- Machine-readable pre-release exports: `docs/sbom/cyclonedx.pre-release.json` and `docs/sbom/spdx.pre-release.json`.
 
 ## Verified Security/Policy Baseline
 
@@ -36,4 +37,4 @@ Last updated: 2026-06-01
 - No claim that provider lifecycle integrations are fully complete for all advertised route profiles.
 - No claim that device-level screenshot matrix is complete in this environment.
 - No claim that signed release APK artifacts have been verified yet.
-- No claim that production SBOM/provenance bundle is already generated.
+- No claim that signed-release SBOM/provenance bundle is already generated.
