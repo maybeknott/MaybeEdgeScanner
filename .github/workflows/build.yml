@@ -316,11 +316,18 @@ jobs:
           mkdir -p dist/source dist/compliance/licenses
           git archive --format=tar.gz --output="dist/source/MaybeEdgeScanner-source-${GITHUB_SHA}.tar.gz" "$GITHUB_SHA"
           git archive --format=zip --output="dist/source/MaybeEdgeScanner-source-${GITHUB_SHA}.zip" "$GITHUB_SHA"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/generate-sbom-artifacts.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/generate-sidecar-provenance.ps1
           (
             cd go-sidecar
             go list -m all
           ) > dist/compliance/licenses/go-modules.txt
           gradle --no-daemon :app:dependencies > dist/compliance/licenses/android-dependencies.txt
+          cp docs/sbom/cyclonedx.pre-release.json dist/compliance/licenses/
+          cp docs/sbom/spdx.pre-release.json dist/compliance/licenses/
+          cp docs/sidecar-binary-provenance.json dist/compliance/licenses/
+          cp docs/LICENSE_NOTICES.md dist/compliance/licenses/
+          cp docs/SOURCE_OFFER.md dist/compliance/licenses/
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
