@@ -38,30 +38,41 @@ final class SidecarHeartbeatGuard {
 
     private final Runnable probeRunnable = new Runnable() {
         @Override public void run() {
-            if (!active) return;
             ScanSessionController session = ScanSessionController.get();
-            if (!session.isRunning()) {
-                stop();
-                return;
+            boolean sessionRunning = session.isRunning();
+            boolean snapshotReachable = false;
+            if (active && sessionRunning) {
+                snapshotReachable = SidecarController.get().refreshHeartbeat(1500).reachable;
             }
-            SidecarController.SidecarSnapshot snapshot = SidecarController.get().refreshHeartbeat(1500);
-            if (snapshot.reachable) {
-                handler.postDelayed(this, INTERVAL_MS);
-                return;
+            SidecarHeartbeatPolicy.Action action = SidecarHeartbeatPolicy.decide(
+                    active,
+                    sessionRunning,
+                    snapshotReachable,
+                    sidecarWasReachable);
+            switch (action) {
+                case NOOP:
+                    return;
+                case RESCHEDULE:
+                    handler.postDelayed(this, INTERVAL_MS);
+                    return;
+                case FAIL_SIDECAR_AND_STOP:
+                    session.requestStop();
+                    session.recordTerminalReason(ScanTerminalReason.FAILED_SIDECAR);
+                    Context context = appContext;
+                    if (context != null) {
+                        ScanForegroundService.update(
+                                context,
+                                "failed",
+                                "Sidecar heartbeat lost",
+                                ScanForegroundService.snapshot().progress);
+                    }
+                    stop();
+                    return;
+                case STOP_ONLY:
+                default:
+                    stop();
+                    return;
             }
-            if (sidecarWasReachable) {
-                session.requestStop();
-                session.recordTerminalReason(ScanTerminalReason.FAILED_SIDECAR);
-                Context context = appContext;
-                if (context != null) {
-                    ScanForegroundService.update(
-                            context,
-                            "failed",
-                            "Sidecar heartbeat lost",
-                            ScanForegroundService.snapshot().progress);
-                }
-            }
-            stop();
         }
     };
 }
