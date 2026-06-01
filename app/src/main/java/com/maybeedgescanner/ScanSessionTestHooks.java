@@ -71,6 +71,23 @@ final class ScanSessionTestHooks {
         return null;
     }
 
+    /** Background/foreground transitions must preserve active session ownership invariants. */
+    static String backgroundTransitionViolation(
+            Snapshot snapshot,
+            boolean movedToBackground,
+            boolean returnedToForeground) {
+        if ((!movedToBackground && !returnedToForeground) || snapshot == null) return null;
+        String base = singleActiveSessionViolation(snapshot);
+        if (base != null) return base;
+        if (movedToBackground && snapshot.executorRunning && !snapshot.orchestratorAlive) {
+            return "background transition lost orchestrator while executor is running";
+        }
+        if (returnedToForeground && snapshot.hasStagedLaunch && !snapshot.executorRunning) {
+            return "foreground return left staged launch pending without running executor";
+        }
+        return null;
+    }
+
     /** Start must not proceed while plan review is pending unless explicitly confirmed. */
     static String planReviewStartViolation(Snapshot snapshot, boolean planReviewPending, boolean planConfirmed) {
         if (!planReviewPending || planConfirmed) return null;
