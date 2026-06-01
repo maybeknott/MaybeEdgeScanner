@@ -11,4 +11,12 @@ public class ScanCommandTest {
         assertEquals(ScanCommand.Kind.CLEAR_SESSION, command.kind);
         assertEquals("activity_ui", command.source);
     }
+
+    @Test
+    public void cancelScanCarriesGenerationAndSource() {
+        ScanCommand command = ScanCommand.cancelScan("notification", 42L);
+        assertEquals(ScanCommand.Kind.CANCEL_SCAN, command.kind);
+        assertEquals("notification", command.source);
+        assertEquals(42L, command.generation);
+    }
 }

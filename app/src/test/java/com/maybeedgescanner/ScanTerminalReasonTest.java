@@ -17,6 +17,12 @@ public class ScanTerminalReasonTest {
     }
 
     @Test
+    public void legacyNotificationStopUsesNotificationReason() {
+        assertEquals(ScanTerminalReason.STOPPED_NOTIFICATION,
+                ScanTerminalReason.fromStopRequested(true, "notification_legacy"));
+    }
+
+    @Test
     public void uiStopUsesUiReason() {
         assertEquals(ScanTerminalReason.STOPPED_UI,
                 ScanTerminalReason.fromStopRequested(true, "activity_ui"));
