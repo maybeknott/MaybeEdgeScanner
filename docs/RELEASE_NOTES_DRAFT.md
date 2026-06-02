@@ -13,6 +13,7 @@ Date: 2026-06-01
 - Background/foreground lifecycle contract coverage expanded (JVM).
 - Compatibility, provenance, and SBOM baseline documentation added.
 
+
 ## Known open blockers (not release-ready yet)
 
 - Device/emulator screenshot matrix for release-critical UI states.

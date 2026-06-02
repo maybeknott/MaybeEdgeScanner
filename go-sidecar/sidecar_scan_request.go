@@ -2,7 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
+)
+
+var (
+	errInvalidScanRequest = errors.New("invalid scan request body")
+	errNoUsableTargets    = errors.New("no usable targets")
+	errNoTargetsSelected  = errors.New("no targets selected")
 )
 
 type sidecarScanRequestV1 struct {
@@ -110,6 +118,7 @@ func (r sidecarScanRequestV1) planWorkItems() []planWorkItem {
 			sni:           sni,
 			sniMode:       strings.TrimSpace(plan.SNIMode),
 			planID:        strings.TrimSpace(plan.PlanID),
+			routeID:       strings.TrimSpace(plan.RouteID),
 			correlationID: strings.TrimSpace(plan.ResultCorrelationID),
 		})
 		if maxPlans > 0 && len(items) >= maxPlans {
@@ -125,6 +134,107 @@ func (item planWorkItem) probeOptions() probeOptions {
 		FixedSNI:            item.sni,
 		SNIMode:             item.sniMode,
 		PlanID:              item.planID,
+		RouteID:             item.routeID,
 		ResultCorrelationID: item.correlationID,
 	}
+}
+
+func legacyScanWorkItems(targets []string, ports []int, routeID string) []planWorkItem {
+	if len(targets) == 0 || len(ports) == 0 {
+		return nil
+	}
+	items := make([]planWorkItem, 0, len(targets)*len(ports))
+	trimmedRouteID := strings.TrimSpace(routeID)
+	for _, target := range targets {
+		t := strings.TrimSpace(target)
+		if t == "" {
+			continue
+		}
+		for _, port := range ports {
+			if port <= 0 {
+				continue
+			}
+			items = append(items, planWorkItem{
+				target:  t,
+				port:    port,
+				routeID: trimmedRouteID,
+			})
+		}
+	}
+	return items
+}
+
+type legacyScanPreparation struct {
+	req              scanRequest
+	routePlan        scanRoutePlan
+	targets          []string
+	items            []planWorkItem
+	warnings         []string
+	safetyPolicy     SafetyPolicyObservation
+	expansionSummary map[string]any
+}
+
+func prepareLegacyScan(bodyBytes []byte) (legacyScanPreparation, error) {
+	var req scanRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		return legacyScanPreparation{}, fmt.Errorf("%w: %v", errInvalidScanRequest, err)
+	}
+	req.normalize()
+	routePlan, err := validateScanRoutePlugin(req.RoutePlugin)
+	if err != nil {
+		return legacyScanPreparation{}, err
+	}
+	if routePlan.Valid && !routePlan.HasRuntimeRoute() {
+		return legacyScanPreparation{
+			req:       req,
+			routePlan: routePlan,
+		}, nil
+	}
+	globalBackoffNS.Store(0)
+	explicitTargets := len(req.Targets) > 0
+	skippedBefore := metricSafetySkipped.Load()
+	targets := expandTargets(req.Targets, req.MaxTargets, req.MaxCIDRHosts, req.RespectSafety)
+	expansionSafetySkipped := metricSafetySkipped.Load() - skippedBefore
+	if len(targets) == 0 && !explicitTargets {
+		targets = expandTargets(loadLines("assets/default_edges_extra.txt"), req.MaxTargets, req.MaxCIDRHosts, req.RespectSafety)
+	}
+	if len(targets) == 0 && explicitTargets {
+		return legacyScanPreparation{}, errNoUsableTargets
+	}
+	if len(targets) == 0 {
+		return legacyScanPreparation{}, errNoTargetsSelected
+	}
+	if len(req.SNIs) == 0 {
+		req.SNIs = loadLines("assets/default_snis.txt")
+	}
+	if req.MaxTargets > 0 && len(targets) > req.MaxTargets {
+		targets = targets[:req.MaxTargets]
+	}
+	if req.Randomize {
+		shuffleStrings(targets)
+	}
+	safetyPolicy := safetyPolicyObservation(req, len(targets))
+	warnings := scanWarnings(req, targets)
+	warnings = append(warnings, safetyPolicy.Warnings...)
+	if routePlan.Valid {
+		if routePlan.HasRuntimeRoute() {
+			warnings = append(warnings, "Route plan includes an attachable runtime dial path; requested and observed route IDs are emitted per result.")
+		} else {
+			warnings = append(warnings, "Route validation is present, but this scan request does not include an attachable runtime route dial path.")
+		}
+	}
+	items := legacyScanWorkItems(targets, req.Ports, routePlan.Validation.RouteID)
+	return legacyScanPreparation{
+		req:          req,
+		routePlan:    routePlan,
+		targets:      targets,
+		items:        items,
+		warnings:     warnings,
+		safetyPolicy: safetyPolicy,
+		expansionSummary: map[string]any{
+			"submitted_tokens": len(req.Targets),
+			"expanded_targets": len(targets),
+			"safety_skipped":   expansionSafetySkipped,
+		},
+	}, nil
 }

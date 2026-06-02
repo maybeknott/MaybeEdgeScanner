@@ -1,6 +1,6 @@
 package com.maybeedgescanner;
 
-/** Pure decision policy for sidecar heartbeat checks. */
+/** MaybeEdgeScanner heartbeat policy preserves route-session ownership semantics. */
 final class SidecarHeartbeatPolicy {
     private SidecarHeartbeatPolicy() {}
 

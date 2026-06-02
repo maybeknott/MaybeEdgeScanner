@@ -16,6 +16,7 @@ Date: 2026-05-31
 
 - `docs/ARCHITECTURAL_GUIDE.md`: no lock-free/arena overclaims.
 - `docs/VERIFICATION_GUIDE.md`: route validation proves listener/dialer attachability for selected modes, not full provider VPN lifecycle or end-user account state.
+- Legacy references to `scripts/verify-release-readiness.ps1` are historical only; that script path is not present in the current repo tree and should not be cited as active evidence.
 
 ## User guide (2026-05-31)
 
@@ -25,3 +26,9 @@ Date: 2026-05-31
 ## Deferred
 
 - Device screenshots for route observer/attachable states (B4).
+
+## 2026-06-02 final refactor closeout
+
+- MainActivity has been reduced through app-owned extraction of diagnostics, result filtering/summary/export, preview input analysis, preview chips, local history, Shizuku process/radio handling, and runtime reporting.
+- Final mirror audit removed the tiny SupportActions wrapper and specialized retained helpers where route/SNI product copy differs.
+- Verification: `./gradlew.bat :app:compileUniversalDebugJavaWithJavac` and `go test ./...` passed after the final closeout pass.

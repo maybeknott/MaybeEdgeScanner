@@ -152,11 +152,11 @@ func buildRoutePhaseResult(res result) (PhaseResult, bool) {
 	}
 	if res.RouteObserved && !res.RouteUsed {
 		return PhaseResult{
-			Phase:      "route",
-			Status:     "failed",
-			ErrorCode:  firstNonEmpty(res.RouteMismatchCode, "ROUTE_OBSERVATION_FAILED"),
-			Retryable:  false,
-			Evidence:   map[string]any{"route_evidence_state": res.RouteEvidenceState},
+			Phase:     "route",
+			Status:    "failed",
+			ErrorCode: firstNonEmpty(res.RouteMismatchCode, "ROUTE_OBSERVATION_FAILED"),
+			Retryable: false,
+			Evidence:  map[string]any{"route_evidence_state": res.RouteEvidenceState},
 		}, true
 	}
 	return PhaseResult{}, false
