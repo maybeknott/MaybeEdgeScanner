@@ -34,6 +34,11 @@ public class ScanTerminalReasonTest {
     }
 
     @Test
+    public void failedStartUsesFailedLifecycle() {
+        assertEquals("failed", ScanTerminalReason.FAILED_START.lifecycleState);
+    }
+
+    @Test
     public void processLostUsesProcessLostLifecycle() {
         assertEquals("process_lost", ScanTerminalReason.PROCESS_LOST.lifecycleState);
     }

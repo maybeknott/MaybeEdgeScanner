@@ -243,8 +243,7 @@ public class ScanForegroundService extends Service {
                 if (command.stagingRequest != null) {
                     ScanSessionStager.Result staged = ScanSessionStager.apply(this, command.stagingRequest);
                     if (!staged.success) {
-                        applySnapshot("failed", staged.error, 0);
-                        ScanSessionController.get().notifyUiObservers();
+                        terminalizeStartFailure(staged.error, ScanTerminalReason.FAILED_START);
                         break;
                     }
                 }
@@ -253,16 +252,14 @@ public class ScanForegroundService extends Service {
                     ScanSessionSnapshot session = sessionSnapshot();
                     int plannedChecks = Math.max(0, session.plannedChecks);
                     if (plannedChecks == 0) {
-                        ScanSessionController.get().requestStop();
-                        ScanSessionController.get().recordTerminalReason(ScanTerminalReason.FAILED_NO_CHECKS);
-                        applySnapshot("failed", "No checks planned. Select targets before starting.", 0);
-                        ScanSessionController.get().notifyUiObservers();
+                        terminalizeStartFailure("No checks planned. Select targets before starting.",
+                                ScanTerminalReason.FAILED_NO_CHECKS);
                         break;
                     }
                     applySnapshot("running", "0 / " + plannedChecks + " checks", 0);
                     SidecarHeartbeatGuard.get().onScanStarted(this, sidecar.reachable);
                 } else if (command.stagingRequest == null) {
-                    applySnapshot("failed", "No staged scan inputs", 0);
+                    terminalizeStartFailure("No staged scan inputs", ScanTerminalReason.FAILED_START);
                 }
                 ScanSessionController.get().notifyUiObservers();
                 break;
@@ -343,6 +340,20 @@ public class ScanForegroundService extends Service {
                 || lower.contains("eacces")
                 || lower.contains("storage")
                 || lower.contains("ioexception");
+    }
+
+    private void terminalizeStartFailure(String detail, ScanTerminalReason reason) {
+        ScanTerminalReason terminal = reason == null ? ScanTerminalReason.FAILED_START : reason;
+        SidecarHeartbeatGuard.get().stop();
+        ScanSessionController.get().requestStop();
+        ScanSessionController.get().recordTerminalReason(terminal);
+        ScanSessionController.get().shutdownExecutor();
+        applySnapshot(terminal.lifecycleState, detail == null || detail.trim().isEmpty()
+                ? "Scan start failed" : detail, 0);
+        finishSession(terminal.lifecycleState);
+        ScanProcessContinuityStore.markTerminal(getApplicationContext());
+        releaseWakeLock();
+        ScanSessionController.get().notifyUiObservers();
     }
 
     private static ScanCommand readCommand(Intent intent) {

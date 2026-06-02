@@ -7,6 +7,7 @@ enum ScanTerminalReason {
     STOPPED_NOTIFICATION("stopped"),
     CLEARED("idle"),
     FAILED_EXPORT("failed"),
+    FAILED_START("failed"),
     FAILED_SIDECAR("failed"),
     FAILED_PROVIDER("failed"),
     FAILED_STORAGE("failed"),
