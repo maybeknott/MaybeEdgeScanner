@@ -79,6 +79,15 @@ func runPlanDrivenScan(w http.ResponseWriter, r *http.Request, v1 sidecarScanReq
 		})
 		return
 	}
+	if routeIDs := v1.requestedRouteIDs(); len(routeIDs) > 0 {
+		writePublicError(w, http.StatusConflict, "ROUTE_UNSUPPORTED", "plan-driven scan route_id requires an attachable route_plugin runtime path", map[string]any{
+			"requested_route_ids": routeIDs,
+			"request_id":          v1.RequestID,
+			"product_mode":        v1.ProductMode,
+			"attachable":          false,
+		})
+		return
+	}
 	safetyPolicy := safetyPolicyObservation(req, len(items))
 	warnings := scanWarnings(req, nil)
 	warnings = append(warnings, safetyPolicy.Warnings...)

@@ -128,6 +128,20 @@ func (r sidecarScanRequestV1) planWorkItems() []planWorkItem {
 	return items
 }
 
+func (r sidecarScanRequestV1) requestedRouteIDs() []string {
+	seen := make(map[string]bool)
+	var ids []string
+	for _, plan := range r.Plans {
+		id := strings.TrimSpace(plan.RouteID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func (item planWorkItem) probeOptions() probeOptions {
 	return probeOptions{
 		FixedIP:             item.ip,

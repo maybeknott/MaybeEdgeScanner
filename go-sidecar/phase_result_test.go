@@ -26,6 +26,18 @@ func TestDecodeSidecarScanRequestV1(t *testing.T) {
 	}
 }
 
+func TestSidecarScanRequestV1CollectsRequestedRouteIDs(t *testing.T) {
+	body := []byte(`{"schema_version":1,"request_id":"req-route","product_mode":"route_pairing","plans":[{"plan_id":"p1","raw_token":"198.51.100.1","resolved_ip":"198.51.100.1","port":443,"route_id":"route-a","safety_status":"allowed"},{"plan_id":"p2","raw_token":"198.51.100.2","resolved_ip":"198.51.100.2","port":443,"route_id":"route-a","safety_status":"allowed"},{"plan_id":"p3","raw_token":"198.51.100.3","resolved_ip":"198.51.100.3","port":443,"route_id":"route-b","safety_status":"allowed"}],"scan_options":{"timeout_ms":1000,"threads":1,"http_probe":false,"http_path":"/"},"safety_policy":{"respect_reserved_ranges":false,"max_plans":10,"max_cidr_hosts":0,"rate_per_second":0,"jitter_ms":0}}`)
+	got, ok := decodeSidecarScanRequestV1(body)
+	if !ok {
+		t.Fatal("expected v1 decode")
+	}
+	ids := got.requestedRouteIDs()
+	if len(ids) != 2 || ids[0] != "route-a" || ids[1] != "route-b" {
+		t.Fatalf("requestedRouteIDs()=%#v", ids)
+	}
+}
+
 func TestPhaseStatusFromCode(t *testing.T) {
 	if got := phaseStatusFromCode("ROUTE_REQUEST_NOT_OBSERVED", errors.New("x")); got != "failed" {
 		t.Fatalf("phaseStatusFromCode()=%q want failed", got)

@@ -249,6 +249,49 @@ func TestValidateRoutingPluginEndpointReturnsStructuredError(t *testing.T) {
 	}
 }
 
+func TestPlanDrivenScanRejectsRouteIDWithoutRuntimeRoute(t *testing.T) {
+	body := bytes.NewBufferString(`{
+		"schema_version":1,
+		"request_id":"req-plan-route",
+		"product_mode":"route_pairing",
+		"plans":[{
+			"plan_id":"p1",
+			"raw_token":"198.51.100.10",
+			"resolved_ip":"198.51.100.10",
+			"port":443,
+			"sni_host":"edge.example.test",
+			"sni_mode":"explicit",
+			"route_id":"route-plan-only",
+			"result_correlation_id":"c1",
+			"dns_mode":"pre_resolved",
+			"safety_status":"allowed"
+		}],
+		"scan_options":{"timeout_ms":1,"threads":1,"http_probe":false,"http_path":"/"},
+		"safety_policy":{"respect_reserved_ranges":false,"max_plans":10,"max_cidr_hosts":0,"rate_per_second":0,"jitter_ms":0}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/scan", body)
+	rec := httptest.NewRecorder()
+	scan(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("scan status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("invalid json error envelope: %v body=%s", err, rec.Body.String())
+	}
+	if envelope["error_code"] != "ROUTE_UNSUPPORTED" || envelope["phase"] != "route" {
+		t.Fatalf("expected route unsupported envelope, got %#v", envelope)
+	}
+	details, _ := envelope["details"].(map[string]any)
+	if details == nil || details["attachable"] != false || details["request_id"] != "req-plan-route" {
+		t.Fatalf("unexpected route unsupported details: %#v", details)
+	}
+	ids, _ := details["requested_route_ids"].([]any)
+	if len(ids) != 1 || ids[0] != "route-plan-only" {
+		t.Fatalf("unexpected requested route ids: %#v", details["requested_route_ids"])
+	}
+}
+
 func TestScanRequestEmitsObservedRouteForAttachableWindscribeLocalProxy(t *testing.T) {
 	proxyListener := listenLocalTCP(t)
 	defer proxyListener.Close()

@@ -17,10 +17,6 @@ import (
 func probe(ctx context.Context, target string, port int, req scanRequest, batchNo int, routePlan scanRoutePlan, opts probeOptions) result {
 	res := result{Target: target, Port: port, BatchNumber: batchNo, NetworkClassification: "unknown", PlanID: opts.PlanID, ResultCorrelationID: opts.ResultCorrelationID}
 	routePlan.ApplyRequestedToResult(&res)
-	if strings.TrimSpace(opts.RouteID) != "" {
-		res.RouteID = opts.RouteID
-		res.RequestedRouteID = opts.RouteID
-	}
 	var phases []PhaseResult
 	dnsStart := time.Now()
 	var ips []string
