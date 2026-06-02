@@ -15,7 +15,7 @@ import (
 )
 
 func probe(ctx context.Context, target string, port int, req scanRequest, batchNo int, routePlan scanRoutePlan, opts probeOptions) result {
-	res := result{Target: target, Port: port, BatchNumber: batchNo, NetworkClassification: "unknown", PlanID: opts.PlanID, ResultCorrelationID: opts.ResultCorrelationID}
+	res := result{Target: target, Port: port, BatchNumber: batchNo, NetworkClassification: "unknown", PlanID: opts.PlanID, ResultCorrelationID: opts.ResultCorrelationID, TargetPlan: opts.TargetPlan}
 	routePlan.ApplyRequestedToResult(&res)
 	var phases []PhaseResult
 	dnsStart := time.Now()

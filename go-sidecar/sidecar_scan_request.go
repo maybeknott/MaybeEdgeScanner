@@ -23,16 +23,36 @@ type sidecarScanRequestV1 struct {
 }
 
 type sidecarTargetPlan struct {
-	PlanID              string  `json:"plan_id"`
-	RawToken            string  `json:"raw_token"`
-	ResolvedIP          string  `json:"resolved_ip"`
-	Port                int     `json:"port"`
-	SNIHost             *string `json:"sni_host"`
-	SNIMode             string  `json:"sni_mode"`
-	RouteID             string  `json:"route_id"`
-	ResultCorrelationID string  `json:"result_correlation_id"`
-	DNSMode             string  `json:"dns_mode"`
-	SafetyStatus        string  `json:"safety_status"`
+	SchemaVersion             int     `json:"schema_version"`
+	PlanID                    string  `json:"plan_id"`
+	RawToken                  string  `json:"raw_token"`
+	SourceType                string  `json:"source_type"`
+	SourceProvider            string  `json:"source_provider"`
+	CorpusRevision            string  `json:"corpus_revision"`
+	NormalizedKind            string  `json:"normalized_kind"`
+	OriginalHostname          string  `json:"original_hostname"`
+	ResolvedIP                string  `json:"resolved_ip"`
+	IPFamily                  string  `json:"ip_family"`
+	Port                      int     `json:"port"`
+	SNIHost                   *string `json:"sni_host"`
+	SNIMode                   string  `json:"sni_mode"`
+	HTTPHost                  *string `json:"http_host"`
+	VerificationHost          *string `json:"verification_host"`
+	DNSMode                   string  `json:"dns_mode"`
+	ResolverID                string  `json:"resolver_id"`
+	ALPNPolicy                string  `json:"alpn_policy"`
+	RouteID                   string  `json:"route_id"`
+	RouteType                 string  `json:"route_type"`
+	NetworkPath               string  `json:"network_path"`
+	SafetyStatus              string  `json:"safety_status"`
+	ExpansionParent           *string `json:"expansion_parent"`
+	ExpansionIndex            *int    `json:"expansion_index"`
+	ExpansionTotalTheoretical *int64  `json:"expansion_total_theoretical"`
+	ExpansionTotalCapped      *int64  `json:"expansion_total_capped"`
+	ExpansionSkippedCount     *int64  `json:"expansion_skipped_count"`
+	SamplingSeed              string  `json:"sampling_seed"`
+	DedupeKey                 string  `json:"dedupe_key"`
+	ResultCorrelationID       string  `json:"result_correlation_id"`
 }
 
 type sidecarScanOptions struct {
@@ -65,6 +85,7 @@ type planWorkItem struct {
 	planID        string
 	routeID       string
 	correlationID string
+	targetPlan    TargetPlanEvidence
 }
 
 func decodeSidecarScanRequestV1(body []byte) (sidecarScanRequestV1, bool) {
@@ -120,6 +141,7 @@ func (r sidecarScanRequestV1) planWorkItems() []planWorkItem {
 			planID:        strings.TrimSpace(plan.PlanID),
 			routeID:       strings.TrimSpace(plan.RouteID),
 			correlationID: strings.TrimSpace(plan.ResultCorrelationID),
+			targetPlan:    plan.evidence(r.ProductMode, port, sni),
 		})
 		if maxPlans > 0 && len(items) >= maxPlans {
 			break
@@ -143,13 +165,58 @@ func (r sidecarScanRequestV1) requestedRouteIDs() []string {
 }
 
 func (item planWorkItem) probeOptions() probeOptions {
-	return probeOptions{
+	opts := probeOptions{
 		FixedIP:             item.ip,
 		FixedSNI:            item.sni,
 		SNIMode:             item.sniMode,
 		PlanID:              item.planID,
 		RouteID:             item.routeID,
 		ResultCorrelationID: item.correlationID,
+	}
+	if item.targetPlan.hasIdentity() {
+		plan := item.targetPlan
+		opts.TargetPlan = &plan
+	}
+	return opts
+}
+
+func (plan sidecarTargetPlan) evidence(productMode string, port int, sni string) TargetPlanEvidence {
+	schemaVersion := plan.SchemaVersion
+	if schemaVersion <= 0 {
+		schemaVersion = 1
+	}
+	return TargetPlanEvidence{
+		SchemaVersion:             schemaVersion,
+		PlanID:                    strings.TrimSpace(plan.PlanID),
+		ProductMode:               strings.TrimSpace(productMode),
+		RawToken:                  strings.TrimSpace(plan.RawToken),
+		SourceType:                strings.TrimSpace(plan.SourceType),
+		SourceProvider:            strings.TrimSpace(plan.SourceProvider),
+		CorpusRevision:            strings.TrimSpace(plan.CorpusRevision),
+		NormalizedKind:            strings.TrimSpace(plan.NormalizedKind),
+		OriginalHostname:          strings.TrimSpace(plan.OriginalHostname),
+		ResolvedIP:                strings.TrimSpace(plan.ResolvedIP),
+		IPFamily:                  strings.TrimSpace(plan.IPFamily),
+		Port:                      port,
+		SNIHost:                   sni,
+		SNIMode:                   strings.TrimSpace(plan.SNIMode),
+		HTTPHost:                  cleanOptionalString(plan.HTTPHost),
+		VerificationHost:          cleanOptionalString(plan.VerificationHost),
+		DNSMode:                   strings.TrimSpace(plan.DNSMode),
+		ResolverID:                strings.TrimSpace(plan.ResolverID),
+		ALPNPolicy:                strings.TrimSpace(plan.ALPNPolicy),
+		RouteID:                   strings.TrimSpace(plan.RouteID),
+		RouteType:                 strings.TrimSpace(plan.RouteType),
+		NetworkPath:               strings.TrimSpace(plan.NetworkPath),
+		SafetyStatus:              strings.TrimSpace(plan.SafetyStatus),
+		ExpansionParent:           cleanOptionalString(plan.ExpansionParent),
+		ExpansionIndex:            plan.ExpansionIndex,
+		ExpansionTotalTheoretical: plan.ExpansionTotalTheoretical,
+		ExpansionTotalCapped:      plan.ExpansionTotalCapped,
+		ExpansionSkippedCount:     plan.ExpansionSkippedCount,
+		SamplingSeed:              strings.TrimSpace(plan.SamplingSeed),
+		DedupeKey:                 strings.TrimSpace(plan.DedupeKey),
+		ResultCorrelationID:       strings.TrimSpace(plan.ResultCorrelationID),
 	}
 }
 

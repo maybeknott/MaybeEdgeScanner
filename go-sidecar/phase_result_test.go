@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +37,60 @@ func TestSidecarScanRequestV1CollectsRequestedRouteIDs(t *testing.T) {
 	ids := got.requestedRouteIDs()
 	if len(ids) != 2 || ids[0] != "route-a" || ids[1] != "route-b" {
 		t.Fatalf("requestedRouteIDs()=%#v", ids)
+	}
+}
+
+func TestPlanWorkItemCarriesTargetPlanEvidence(t *testing.T) {
+	body := []byte(`{"schema_version":1,"request_id":"req-plan","product_mode":"route_pairing","plans":[{"schema_version":1,"plan_id":"p-route","raw_token":"203.0.113.10","source_type":"manual","normalized_kind":"ip","original_hostname":"","resolved_ip":"203.0.113.10","ip_family":"ipv4","port":9443,"sni_host":"edge.example","sni_mode":"explicit","http_host":"edge.example","verification_host":"edge.example","dns_mode":"pre_resolved","resolver_id":"system","alpn_policy":"alpn_select","route_id":"route-a","route_type":"socks5","network_path":"proxy","safety_status":"allowed","expansion_parent":"203.0.113.0/24","expansion_index":5,"expansion_total_theoretical":256,"expansion_total_capped":16,"expansion_skipped_count":2,"sampling_seed":"seed-route","dedupe_key":"dedupe-route","result_correlation_id":"corr-route"}],"scan_options":{"timeout_ms":1000,"threads":1,"http_probe":false,"http_path":"/"},"safety_policy":{"respect_reserved_ranges":false,"max_plans":10,"max_cidr_hosts":0,"rate_per_second":0,"jitter_ms":0}}`)
+	req, ok := decodeSidecarScanRequestV1(body)
+	if !ok {
+		t.Fatal("expected v1 decode")
+	}
+	items := req.planWorkItems()
+	if len(items) != 1 {
+		t.Fatalf("planWorkItems()=%d want 1", len(items))
+	}
+	opts := planProbeOptions(items[0])
+	if opts.TargetPlan == nil {
+		t.Fatal("expected TargetPlan evidence")
+	}
+	plan := opts.TargetPlan
+	if plan.ProductMode != "route_pairing" || plan.RouteID != "route-a" || plan.RouteType != "socks5" || plan.NetworkPath != "proxy" {
+		t.Fatalf("route plan fields not preserved: %+v", plan)
+	}
+	if plan.RawToken != "203.0.113.10" || plan.ResolvedIP != "203.0.113.10" || plan.SNIHost != "edge.example" {
+		t.Fatalf("target fields not preserved: %+v", plan)
+	}
+	if plan.ExpansionIndex == nil || *plan.ExpansionIndex != 5 || plan.ExpansionTotalTheoretical == nil || *plan.ExpansionTotalTheoretical != 256 {
+		t.Fatalf("expansion fields not preserved: %+v", plan)
+	}
+}
+
+func TestResultJSONIncludesTargetPlanEvidence(t *testing.T) {
+	res := result{
+		Target:              "203.0.113.10",
+		Port:                443,
+		PlanID:              "p-json",
+		ResultCorrelationID: "corr-json",
+		RequestedRouteID:    "route-json",
+		TargetPlan: &TargetPlanEvidence{
+			SchemaVersion:       1,
+			PlanID:              "p-json",
+			ProductMode:         "route_pairing",
+			RawToken:            "203.0.113.10",
+			ResolvedIP:          "203.0.113.10",
+			Port:                443,
+			RouteID:             "route-json",
+			ResultCorrelationID: "corr-json",
+		},
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	out := string(b)
+	if !strings.Contains(out, `"target_plan"`) || !strings.Contains(out, `"route_id":"route-json"`) {
+		t.Fatalf("target_plan evidence missing from json: %s", out)
 	}
 }
 
