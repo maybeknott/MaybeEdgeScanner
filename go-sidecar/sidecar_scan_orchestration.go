@@ -262,8 +262,11 @@ func emitScanProgress(
 	if resultIndicatesReset(res) {
 		metricResets.Add(1)
 	}
-	if res.Error != "" {
-		recentErrors.Append(res.Error)
+	errorSignals := resultErrorSignals(res)
+	for _, signal := range errorSignals {
+		recentErrors.Append(signal)
+	}
+	if len(errorSignals) > 0 {
 		trackAdaptiveBackoff(recentErrors.Snapshot(), ratePerSecond)
 	}
 	payloadStats := stats{

@@ -42,6 +42,23 @@ func TestPhaseStatusFromCode(t *testing.T) {
 	if got := phaseStatusFromCode("ROUTE_REQUEST_NOT_OBSERVED", errors.New("x")); got != "failed" {
 		t.Fatalf("phaseStatusFromCode()=%q want failed", got)
 	}
+	cases := []struct {
+		code string
+		want string
+	}{
+		{code: "TCP_CONNECT_TIMEOUT", want: "timeout"},
+		{code: "TCP_CONNECT_REFUSED", want: "refused"},
+		{code: "TLS_HANDSHAKE_RESET", want: "reset"},
+		{code: "PROXY_CONNECT_MALFORMED_RESPONSE", want: "malformed"},
+		{code: "SAFETY_RESERVED_RANGE_EXCLUDED", want: "skipped"},
+		{code: "HTTP2_UNSUPPORTED_IN_PROBE", want: "unsupported"},
+		{code: "LOCAL_API_THROTTLED", want: "throttled"},
+	}
+	for _, tc := range cases {
+		if got := phaseStatusFromCode(tc.code, errors.New("x")); got != tc.want {
+			t.Fatalf("phaseStatusFromCode(%q)=%q want %q", tc.code, got, tc.want)
+		}
+	}
 }
 
 func TestBuildRoutePhaseResult(t *testing.T) {
@@ -49,5 +66,36 @@ func TestBuildRoutePhaseResult(t *testing.T) {
 	phase, ok := buildRoutePhaseResult(res)
 	if !ok || phase.Phase != "route" || phase.ErrorCode != "ROUTE_REQUEST_NOT_OBSERVED" {
 		t.Fatalf("unexpected route phase %#v ok=%v", phase, ok)
+	}
+}
+
+func TestFinalizeFinalPhasePrefersRouteEvidenceFailure(t *testing.T) {
+	res := result{HTTP: true, TLS: true, ALPN: "http/1.1", PhaseResults: []PhaseResult{
+		newPhaseSuccess("tcp", 10),
+		newPhaseSuccess("tls", 20),
+		newPhaseFailure("route", errors.New("not observed"), 0, "ROUTE_REQUEST_NOT_OBSERVED"),
+	}}
+	if got := finalizeFinalPhase(res, res.PhaseResults, ""); got != "route" {
+		t.Fatalf("finalizeFinalPhase()=%q want route", got)
+	}
+}
+
+func TestResultErrorSignalsIncludeRouteAndStructuredPhases(t *testing.T) {
+	res := result{
+		RouteErrorCode: "PROXY_407_AUTH_REQUIRED",
+		ErrorCode:      "LEGACY_FAILED",
+		Error:          "legacy text",
+		PhaseResults: []PhaseResult{
+			newPhaseSuccess("tcp", 1),
+			newPhaseFailure("route", errors.New("proxy auth"), 2, "PROXY_407_AUTH_REQUIRED"),
+			newPhaseFailure("tcp", errors.New("timeout"), 3, "TCP_CONNECT_TIMEOUT"),
+		},
+	}
+	signals := resultErrorSignals(res)
+	if len(signals) != 5 {
+		t.Fatalf("signals=%#v", signals)
+	}
+	if signals[0] != "PROXY_407_AUTH_REQUIRED" || signals[1] != "TCP_CONNECT_TIMEOUT" {
+		t.Fatalf("phase signals not first: %#v", signals)
 	}
 }

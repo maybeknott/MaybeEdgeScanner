@@ -52,12 +52,16 @@ func phaseStatusFromCode(code string, err error) string {
 		return "refused"
 	case strings.HasSuffix(upper, "_RESET"):
 		return "reset"
+	case strings.Contains(upper, "_MALFORMED"):
+		return "malformed"
 	case strings.Contains(upper, "_SKIPPED"), strings.HasSuffix(upper, "_EXCLUDED"):
 		return "skipped"
 	case strings.Contains(upper, "_UNSUPPORTED"):
 		return "unsupported"
 	case strings.HasSuffix(upper, "_CANCELLED"):
 		return "cancelled"
+	case strings.Contains(upper, "_THROTTLED"):
+		return "throttled"
 	default:
 		return "failed"
 	}
@@ -104,6 +108,9 @@ func httpPhaseFromALPN(alpn string) string {
 }
 
 func finalizeFinalPhase(res result, phases []PhaseResult, lastErrCode string) string {
+	if phase := finalRouteFailurePhase(phases); phase != "" {
+		return phase
+	}
 	if res.HTTP {
 		return httpPhaseFromALPN(res.ALPN)
 	}
@@ -124,9 +131,18 @@ func finalizeFinalPhase(res result, phases []PhaseResult, lastErrCode string) st
 	return ""
 }
 
+func finalRouteFailurePhase(phases []PhaseResult) string {
+	for i := len(phases) - 1; i >= 0; i-- {
+		if phases[i].Phase == "route" && phases[i].Status != "success" && phases[i].Status != "skipped" {
+			return "route"
+		}
+	}
+	return ""
+}
+
 func resultIndicatesTimeout(res result) bool {
 	for _, phase := range res.PhaseResults {
-		if phase.Status == "timeout" {
+		if phase.Status == "timeout" || strings.HasSuffix(strings.ToUpper(phase.ErrorCode), "_TIMEOUT") {
 			return true
 		}
 	}
@@ -135,11 +151,37 @@ func resultIndicatesTimeout(res result) bool {
 
 func resultIndicatesReset(res result) bool {
 	for _, phase := range res.PhaseResults {
-		if phase.Status == "reset" {
+		if phase.Status == "reset" || strings.HasSuffix(strings.ToUpper(phase.ErrorCode), "_RESET") {
 			return true
 		}
 	}
 	return strings.HasSuffix(res.ErrorCode, "_RESET")
+}
+
+func resultErrorSignals(res result) []string {
+	var signals []string
+	for _, phase := range res.PhaseResults {
+		if phase.Status == "" || phase.Status == "success" || phase.Status == "skipped" {
+			continue
+		}
+		signal := strings.TrimSpace(phase.ErrorCode)
+		if signal == "" {
+			signal = strings.TrimSpace(phase.Status)
+		}
+		if signal != "" {
+			signals = append(signals, signal)
+		}
+	}
+	if strings.TrimSpace(res.RouteErrorCode) != "" {
+		signals = append(signals, strings.TrimSpace(res.RouteErrorCode))
+	}
+	if strings.TrimSpace(res.ErrorCode) != "" {
+		signals = append(signals, strings.TrimSpace(res.ErrorCode))
+	}
+	if strings.TrimSpace(res.Error) != "" {
+		signals = append(signals, strings.TrimSpace(res.Error))
+	}
+	return signals
 }
 
 func buildRoutePhaseResult(res result) (PhaseResult, bool) {
