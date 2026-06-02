@@ -226,8 +226,8 @@ func exportNmap(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(row.IP, ":") {
 			addrType = "ipv6"
 		}
-		_, _ = fmt.Fprintf(w, `<host><status state="up"/><address addr="%s" addrtype="%s"/><ports><port protocol="tcp" portid="%d"><state state="%s"/><service name="%s" product="%s"/></port></ports></host>`+"\n",
-			xmlEscape(row.IP), addrType, row.Port, state, xmlEscape(row.SNI), xmlEscape(row.NetworkClassification))
+		_, _ = fmt.Fprintf(w, `<host><status state="up"/><address addr="%s" addrtype="%s"/><ports><port protocol="tcp" portid="%d"><state state="%s"/><service name="%s" product="%s"/></port></ports>%s</host>`+"\n",
+			xmlEscape(row.IP), addrType, row.Port, state, xmlEscape(row.SNI), xmlEscape(row.NetworkClassification), nmapHostScripts(row))
 	}
 	_, _ = fmt.Fprintln(w, `</nmaprun>`)
 }

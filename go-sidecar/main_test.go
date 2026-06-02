@@ -193,6 +193,58 @@ func TestExportNmapRejectsNonPostWithStructuredMethodError(t *testing.T) {
 	}
 }
 
+func TestExportNmapIncludesTargetPlanAndRouteTraceability(t *testing.T) {
+	body := bytes.NewBufferString(`[
+		{
+			"target":"203.0.113.10",
+			"ip":"203.0.113.10",
+			"port":443,
+			"sni":"edge.example",
+			"tcp":true,
+			"tls":true,
+			"network_classification":"public",
+			"plan_id":"p-route",
+			"result_correlation_id":"corr-route",
+			"requested_route_id":"route-a",
+			"observed_route_id":"route-a",
+			"target_plan":{
+				"schema_version":1,
+				"plan_id":"p-route",
+				"product_mode":"route_pairing",
+				"raw_token":"203.0.113.10",
+				"resolved_ip":"203.0.113.10",
+				"sni_mode":"explicit",
+				"route_id":"route-a",
+				"route_type":"socks5",
+				"dedupe_key":"dedupe<route>",
+				"result_correlation_id":"corr-route"
+			}
+		}
+	]`)
+	req := httptest.NewRequest(http.MethodPost, "/api/export/nmap", body)
+	rec := httptest.NewRecorder()
+	exportNmap(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	got := rec.Body.String()
+	for _, want := range []string{
+		`<hostscript>`,
+		`id="maybeedgescanner-target-plan"`,
+		`product_mode=route_pairing`,
+		`route_id=route-a`,
+		`route_type=socks5`,
+		`dedupe_key=dedupe&lt;route&gt;`,
+		`id="maybeedgescanner-result-correlation"`,
+		`requested_route_id=route-a`,
+		`observed_route_id=route-a`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("export missing %q in %s", want, got)
+		}
+	}
+}
+
 func TestValidateRoutingPluginEndpointReturnsObservationTemplate(t *testing.T) {
 	body := bytes.NewBufferString(`{
 		"schema_version":1,
