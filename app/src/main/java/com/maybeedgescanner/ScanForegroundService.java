@@ -424,7 +424,7 @@ public class ScanForegroundService extends Service {
         return value == null || value.trim().isEmpty() ? fallback : value;
     }
 
-    private static void publishFallbackLifecycle(Context context, String state, String detail, int progress) {
+    static void publishFallbackLifecycle(Context context, String state, String detail, int progress) {
         int boundedProgress = Math.max(0, Math.min(100, progress));
         ScanLifecycleSnapshot next = new ScanLifecycleSnapshot(
                 state == null || state.trim().isEmpty() ? "running" : state.trim(),
