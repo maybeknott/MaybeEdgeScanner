@@ -30,6 +30,22 @@ public class TargetPlanRecordTest {
     }
 
     @Test
+    public void hostnamePassedAsResolvedIpIsSanitizedButStillRouteDistinct() {
+        EdgeRouteProfile route = EdgeRouteProfile.direct();
+        route.routeId = "route-direct";
+        TargetPlanRecord first = TargetPlanRecord.forRoutePairingProbe(
+                "alpha-edge.example.com", "alpha-edge.example.com", 443, "front.example.com", true, route);
+        TargetPlanRecord second = TargetPlanRecord.forRoutePairingProbe(
+                "beta-edge.example.com", "beta-edge.example.com", 443, "front.example.com", true, route);
+
+        assertEquals("", first.resolvedIp());
+        assertEquals("unknown", first.ipFamily());
+        assertTrue(first.dedupeKey().contains("raw=alpha-edge.example.com"));
+        assertTrue(first.dedupeKey().contains("route-direct"));
+        assertNotEquals(first.planId(), second.planId());
+    }
+
+    @Test
     public void cidrExpansionPreservesParentAndRoute() {
         EdgeRouteProfile route = EdgeRouteProfile.direct();
         route.routeId = "route-direct";

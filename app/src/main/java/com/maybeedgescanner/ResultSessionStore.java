@@ -9,10 +9,12 @@ final class ResultSessionStore<T> {
 
     private final Object lock = new Object();
     private final ArrayList<T> rows = new ArrayList<>();
-    private final String sessionId = UUID.randomUUID().toString();
+    private String sessionId = UUID.randomUUID().toString();
 
     String sessionId() {
-        return sessionId;
+        synchronized (lock) {
+            return sessionId;
+        }
     }
 
     int append(T row) {
@@ -37,6 +39,7 @@ final class ResultSessionStore<T> {
     void clear() {
         synchronized (lock) {
             rows.clear();
+            sessionId = UUID.randomUUID().toString();
         }
     }
 

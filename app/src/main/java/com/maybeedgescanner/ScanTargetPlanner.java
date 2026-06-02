@@ -284,8 +284,9 @@ final class ScanTargetPlanner {
         String sni = sniHost == null ? "" : sniHost.trim();
         for (String target : previewTargets) {
             if (target == null || target.trim().isEmpty()) continue;
-            String ip = target.trim();
-            ids.add(TargetPlanRecord.forRoutePairingProbe(ip, ip, safePort, sni, sniPairingEnabled, routeProfile).planId());
+            String token = target.trim();
+            String resolvedIp = isIp(token) ? token : "";
+            ids.add(TargetPlanRecord.forRoutePairingProbe(token, resolvedIp, safePort, sni, sniPairingEnabled, routeProfile).planId());
         }
         return ids.size();
     }

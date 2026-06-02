@@ -1,8 +1,5 @@
 package com.maybeedgescanner;
 
-import java.net.Inet4Address;
-import java.net.Inet6Address;
-import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -76,12 +73,12 @@ final class ScanInputAnalyzer {
             String[] p = v.split("/", 2);
             try {
                 int prefix = Integer.parseInt(p[1]);
-                return p.length == 2 && isIp(p[0]) && prefix >= 0 && prefix <= (p[0].contains(":") ? 128 : 32);
+                return p.length == 2 && ScanTargetPlanner.isIp(p[0]) && prefix >= 0 && prefix <= (p[0].contains(":") ? 128 : 32);
             } catch (Exception ignored) { return false; }
         }
         if (v.contains("-") && !ScanTargetPlanner.looksLikeIpv4Range(v) && !validDomainToken(v)) return false;
         if (ScanTargetPlanner.looksLikeIpv4Range(v)) return true;
-        return isIp(v) || validDomainToken(v);
+        return ScanTargetPlanner.isIp(v) || validDomainToken(v);
     }
 
     static boolean validDomainToken(String value) {
@@ -120,7 +117,7 @@ final class ScanInputAnalyzer {
                     stats.estimatedIps += Math.max(1, estimated);
                     if (ScanTargetPlanner.looksLikePrefix(clean) && estimateCidrCount.apply(clean, Integer.MAX_VALUE) > 0) stats.cidrs++;
                     else if (ScanTargetPlanner.looksLikeIpv4Range(clean) && estimateRangeCount.apply(clean, Integer.MAX_VALUE) > 0) stats.ranges++;
-                    else if (isIp(clean)) stats.ips++;
+                    else if (ScanTargetPlanner.isIp(clean)) stats.ips++;
                     else stats.hostnames++;
                 }
                 if (stats.preview.size() < 12 && !stats.preview.contains(clean)) stats.preview.add(clean);
@@ -138,23 +135,6 @@ final class ScanInputAnalyzer {
     private static String cleanToken(String token) {
         if (token == null) return "";
         return token.trim();
-    }
-
-    private static boolean isIp(String value) {
-        try {
-            InetAddress addr = InetAddress.getByName(value);
-            return addr instanceof Inet4Address || addr instanceof Inet6Address;
-        } catch (Exception ignored) {
-            return false;
-        }
-    }
-
-    private static boolean isIpv4(String value) {
-        try {
-            return InetAddress.getByName(value) instanceof Inet4Address;
-        } catch (Exception ignored) {
-            return false;
-        }
     }
 
     private static String joinComma(List<String> values) {
