@@ -2199,8 +2199,8 @@ public class MainActivity extends Activity {
 
     private static String sampleOneExpandedTarget(String token, int index) {
         String clean = cleanToken(token);
-        if (clean.contains("/")) return sampleCidr(clean, index);
-        if (clean.contains("-")) return sampleRange(clean, index);
+        if (ScanTargetPlanner.looksLikePrefix(clean)) return sampleCidr(clean, index);
+        if (ScanTargetPlanner.looksLikeIpv4Range(clean)) return sampleRange(clean, index);
         return clean;
     }
 

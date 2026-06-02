@@ -12,18 +12,18 @@ import static org.junit.Assert.assertTrue;
 public class ScanInputAnalyzerTest {
     @Test
     public void targetStatsPreserveRoutePairingExpansionShape() {
-        String raw = "8.8.8.8\nedgeexample.invalid 8.8.8.8\nbad/host\n8.8.0.0/30\n8.8.8.1-8.8.8.3";
+        String raw = "8.8.8.8\nedge-route.invalid 8.8.8.8\nbad/host\n8.8.0.0/30\n8.8.8.1-8.8.8.3";
 
         String stats = ScanInputAnalyzer.customTargetStatsText(
                 raw,
                 values -> {
                     String value = values.get(0);
                     if (value.contains("/")) return 4;
-                    if (value.contains("-")) return 3;
+                    if (ScanTargetPlanner.looksLikeIpv4Range(value)) return 3;
                     return 1;
                 },
                 (value, cap) -> value.contains("/") ? 4 : 0,
-                (value, cap) -> value.contains("-") ? 3 : 0);
+                (value, cap) -> ScanTargetPlanner.looksLikeIpv4Range(value) ? 3 : 0);
 
         assertTrue(stats.contains("6 items"));
         assertTrue(stats.contains("5 valid"));
@@ -49,15 +49,17 @@ public class ScanInputAnalyzerTest {
         assertFalse(ScanInputAnalyzer.hasValidTargets("bad_host"));
         assertTrue(ScanInputAnalyzer.hasValidTargets("1.1.1.1"));
         assertTrue(ScanInputAnalyzer.hasValidTargets("edge.example.com"));
+        assertTrue(ScanInputAnalyzer.hasValidTargets("edge-route.example.com"));
     }
 
     @Test
     public void previewExpandedTargetsSamplesOnlyExpandedForms() {
         List<String> preview = ScanInputAnalyzer.previewExpandedTargets(
-                Arrays.asList("8.8.0.0/30", "8.8.8.1-8.8.8.3", "edge.example.com"),
-                3,
+                Arrays.asList("8.8.0.0/30", "8.8.8.1-8.8.8.3", "edge.example.com", "edge-route.example.com"),
+                4,
                 (value, index) -> value + "#" + index);
 
-        assertEquals(Arrays.asList("8.8.0.0/30#0", "8.8.8.1-8.8.8.3#1", "edge.example.com"), preview);
+        assertEquals(Arrays.asList("8.8.0.0/30#0", "8.8.8.1-8.8.8.3#1", "edge.example.com", "edge-route.example.com"), preview);
     }
+
 }

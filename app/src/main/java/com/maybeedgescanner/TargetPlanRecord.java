@@ -14,16 +14,18 @@ final class TargetPlanRecord {
     private final String planId;
     private final String correlationId;
     private final String productMode;
+    private final String normalizedKind;
     private final String sniMode;
     private final String dedupeKey;
     private final String routeId;
 
     private TargetPlanRecord(JSONObject payload, String planId, String correlationId, String productMode,
-                             String sniMode, String dedupeKey, String routeId) {
+                             String normalizedKind, String sniMode, String dedupeKey, String routeId) {
         this.payload = payload;
         this.planId = planId;
         this.correlationId = correlationId;
         this.productMode = productMode;
+        this.normalizedKind = normalizedKind;
         this.sniMode = sniMode;
         this.dedupeKey = dedupeKey;
         this.routeId = routeId;
@@ -91,7 +93,7 @@ final class TargetPlanRecord {
             o.put("result_correlation_id", correlationId);
         } catch (Exception ignored) {
         }
-        return new TargetPlanRecord(o, planId, correlationId, productMode, sniMode, dedupe, clean(routeId));
+        return new TargetPlanRecord(o, planId, correlationId, productMode, kind, sniMode, dedupe, clean(routeId));
     }
 
     JSONObject toJson() {
@@ -114,6 +116,10 @@ final class TargetPlanRecord {
         return productMode;
     }
 
+    String normalizedKind() {
+        return normalizedKind;
+    }
+
     String sniMode() {
         return sniMode;
     }
@@ -133,8 +139,8 @@ final class TargetPlanRecord {
     private static String normalizedKind(String token) {
         if (token.isEmpty()) return "ip";
         if (ScanTargetPlanner.isIp(token)) return "ip";
-        if (token.contains("/")) return "cidr";
-        if (token.contains("-")) return "range";
+        if (ScanTargetPlanner.looksLikePrefix(token)) return "cidr";
+        if (ScanTargetPlanner.looksLikeIpv4Range(token)) return "range";
         return "hostname";
     }
 

@@ -64,7 +64,7 @@ final class ScanInputAnalyzer {
             if (out.size() >= cap) break;
             String clean = cleanToken(token);
             if (clean.isEmpty()) continue;
-            out.add((clean.contains("/") || clean.contains("-")) ? sampleOneExpandedTarget.apply(clean, index++) : clean);
+            out.add((ScanTargetPlanner.looksLikePrefix(clean) || ScanTargetPlanner.looksLikeIpv4Range(clean)) ? sampleOneExpandedTarget.apply(clean, index++) : clean);
         }
         return out;
     }
@@ -72,17 +72,15 @@ final class ScanInputAnalyzer {
     static boolean validTargetToken(String value) {
         if (value == null || value.trim().isEmpty()) return false;
         String v = value.trim();
-        if (v.contains("-")) {
-            String[] p = v.split("-", 2);
-            return p.length == 2 && isIpv4(p[0]) && isIpv4(p[1]);
-        }
-        if (v.contains("/")) {
+        if (ScanTargetPlanner.looksLikePrefix(v)) {
             String[] p = v.split("/", 2);
             try {
                 int prefix = Integer.parseInt(p[1]);
                 return p.length == 2 && isIp(p[0]) && prefix >= 0 && prefix <= (p[0].contains(":") ? 128 : 32);
             } catch (Exception ignored) { return false; }
         }
+        if (v.contains("-") && !ScanTargetPlanner.looksLikeIpv4Range(v) && !validDomainToken(v)) return false;
+        if (ScanTargetPlanner.looksLikeIpv4Range(v)) return true;
         return isIp(v) || validDomainToken(v);
     }
 
@@ -120,8 +118,8 @@ final class ScanInputAnalyzer {
                 if (targets) {
                     int estimated = estimateExpandedTargetCount.apply(Collections.singletonList(clean));
                     stats.estimatedIps += Math.max(1, estimated);
-                    if (clean.contains("/") && estimateCidrCount.apply(clean, Integer.MAX_VALUE) > 0) stats.cidrs++;
-                    else if (clean.contains("-") && estimateRangeCount.apply(clean, Integer.MAX_VALUE) > 0) stats.ranges++;
+                    if (ScanTargetPlanner.looksLikePrefix(clean) && estimateCidrCount.apply(clean, Integer.MAX_VALUE) > 0) stats.cidrs++;
+                    else if (ScanTargetPlanner.looksLikeIpv4Range(clean) && estimateRangeCount.apply(clean, Integer.MAX_VALUE) > 0) stats.ranges++;
                     else if (isIp(clean)) stats.ips++;
                     else stats.hostnames++;
                 }

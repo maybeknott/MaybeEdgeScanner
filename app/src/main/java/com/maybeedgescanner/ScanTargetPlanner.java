@@ -77,6 +77,16 @@ final class ScanTargetPlanner {
         }
     }
 
+    static boolean looksLikePrefix(String value) {
+        return value != null && value.trim().contains("/");
+    }
+
+    static boolean looksLikeIpv4Range(String value) {
+        if (value == null) return false;
+        String[] parts = value.trim().split("-", 2);
+        return parts.length == 2 && isIpv4(parts[0]) && isIpv4(parts[1]);
+    }
+
     static List<String> expandTargets(List<String> raw, int totalCap) {
         ArrayList<String> out = new ArrayList<>();
         for (ExpandedTarget entry : expandTargetsDetailed(raw, totalCap)) {
@@ -103,9 +113,9 @@ final class ScanTargetPlanner {
             String clean = cleanToken(value);
             if (clean.isEmpty()) continue;
             int remaining = cap - out.size();
-            if (clean.contains("/")) {
+            if (looksLikePrefix(clean)) {
                 appendExpanded(out, clean, expandCidr(clean, remaining), estimateCidrCount(clean, Integer.MAX_VALUE));
-            } else if (clean.contains("-")) {
+            } else if (looksLikeIpv4Range(clean)) {
                 appendExpanded(out, clean, expandRange(clean, remaining), estimateRangeCount(clean, Integer.MAX_VALUE));
             } else {
                 out.add(new ExpandedTarget(clean, null));
@@ -130,8 +140,8 @@ final class ScanTargetPlanner {
         for (String value : raw) {
             String clean = cleanToken(value);
             if (clean.isEmpty()) continue;
-            if (clean.contains("/")) total += estimateCidrCount(clean, perEntryCap);
-            else if (clean.contains("-")) total += estimateRangeCount(clean, perEntryCap);
+            if (looksLikePrefix(clean)) total += estimateCidrCount(clean, perEntryCap);
+            else if (looksLikeIpv4Range(clean)) total += estimateRangeCount(clean, perEntryCap);
             else total++;
             if (total > Integer.MAX_VALUE) return Integer.MAX_VALUE;
         }

@@ -20,6 +20,16 @@ public class TargetPlanRecordTest {
     }
 
     @Test
+    public void hyphenatedHostnameKeepsHostnameKind() {
+        EdgeRouteProfile route = EdgeRouteProfile.direct();
+        TargetPlanRecord plan = TargetPlanRecord.forRoutePairingProbe(
+                "edge-route.example.com", "198.51.100.34", 443, "edge-route.example.com", true, route);
+
+        assertEquals("domain_sni", plan.sniMode());
+        assertEquals("hostname", plan.normalizedKind());
+    }
+
+    @Test
     public void cidrExpansionPreservesParentAndRoute() {
         EdgeRouteProfile route = EdgeRouteProfile.direct();
         route.routeId = "route-direct";
