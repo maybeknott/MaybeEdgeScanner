@@ -10,6 +10,20 @@ final class ResultExportFormatter {
 
     private ResultExportFormatter() {}
 
+    interface Accessor<T> {
+        String ip(T row);
+        String address(T row);
+        String sni(T row);
+        String csv(T row);
+    }
+
+    private static final Accessor<MainActivity.Result> RESULT_ACCESSOR = new Accessor<MainActivity.Result>() {
+        @Override public String ip(MainActivity.Result row) { return row.ip; }
+        @Override public String address(MainActivity.Result row) { return row.address(); }
+        @Override public String sni(MainActivity.Result row) { return row.sni; }
+        @Override public String csv(MainActivity.Result row) { return row.csv(); }
+    };
+
     static MainActivity.ExportPayload buildSelectedFormat(
             List<MainActivity.Result> rows,
             int format,
@@ -21,28 +35,34 @@ final class ResultExportFormatter {
             return new MainActivity.ExportPayload("JSON", arr.toString(2));
         }
 
+        return new MainActivity.ExportPayload(String.valueOf(selectedLabel), buildNonJsonContent(rows, format, RESULT_ACCESSOR));
+    }
+
+    static <T> String buildNonJsonContent(List<T> rows, int format, Accessor<T> accessor) {
         StringBuilder sb = new StringBuilder();
         if (format == 4) {
             sb.append(CSV_HEADER);
         }
         LinkedHashSet<String> dedupe = new LinkedHashSet<>();
-        for (MainActivity.Result r : rows) {
-            if (r.ip == null || r.ip.isEmpty()) continue;
+        for (T r : rows) {
+            String ip = accessor.ip(r);
+            if (ip == null || ip.isEmpty()) continue;
             if (format == 0 || format == 1) {
-                dedupe.add(r.ip);
+                dedupe.add(ip);
                 continue;
             }
             if (format == 2) {
-                String sni = r.sni == null ? "" : r.sni.trim();
-                dedupe.add((r.address() + " " + sni).trim());
+                String sni = accessor.sni(r) == null ? "" : accessor.sni(r).trim();
+                dedupe.add((accessor.address(r) + " " + sni).trim());
                 continue;
             }
             if (format == 3) {
-                if (r.sni != null && !r.sni.trim().isEmpty()) dedupe.add(r.sni.trim());
+                String sni = accessor.sni(r);
+                if (sni != null && !sni.trim().isEmpty()) dedupe.add(sni.trim());
                 continue;
             }
             if (format == 4) {
-                sb.append(r.csv()).append('\n');
+                sb.append(accessor.csv(r)).append('\n');
             }
         }
 
@@ -51,7 +71,7 @@ final class ResultExportFormatter {
         } else if (format == 1) {
             sb.append(joinComma(dedupe));
         }
-        return new MainActivity.ExportPayload(String.valueOf(selectedLabel), sb.toString());
+        return sb.toString();
     }
 
     static String buildVisibleCsv(List<MainActivity.Result> rows) {
@@ -78,4 +98,3 @@ final class ResultExportFormatter {
         return sb.toString();
     }
 }
-
